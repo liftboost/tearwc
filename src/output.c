@@ -43,8 +43,9 @@ get_tearing_retry_count(struct output *output)
 bool
 output_get_tearing_allowance(struct output *output)
 {
+	return true;
 	struct server *server = output->server;
-
+	
 	/* never allow tearing when disabled */
 	if (!rc.allow_tearing) {
 		return false;
