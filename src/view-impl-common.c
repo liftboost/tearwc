@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include "common/list.h"
+#include "foreign-toplevel.h"
 #include "labwc.h"
 #include "view.h"
 #include "view-impl-common.h"
@@ -41,8 +42,9 @@ view_impl_map(struct view *view)
 	 */
 	enum property ret = window_rules_get_property(view, "skipTaskbar");
 	if (ret == LAB_PROP_TRUE) {
-		if (view->toplevel.handle) {
-			wlr_foreign_toplevel_handle_v1_destroy(view->toplevel.handle);
+		if (view->foreign_toplevel) {
+			foreign_toplevel_destroy(view->foreign_toplevel);
+			view->foreign_toplevel = NULL;
 		}
 	}
 
@@ -52,7 +54,7 @@ view_impl_map(struct view *view)
 	 */
 	desktop_update_top_layer_visiblity(view->server);
 
-	wlr_log(WLR_DEBUG, "[map] identifier=%s, title=%s\n",
+	wlr_log(WLR_DEBUG, "[map] identifier=%s, title=%s",
 		view_get_string_prop(view, "app_id"),
 		view_get_string_prop(view, "title"));
 }

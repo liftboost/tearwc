@@ -202,7 +202,6 @@ For themes, search the internet for "openbox themes" and place them in
 
 - https://github.com/addy-dclxvi/openbox-theme-collections
 - https://github.com/the-zero885/Lubuntu-Arc-Round-Openbox-Theme
-- https://bitbucket.org/archlabslinux/themes/
 - https://github.com/BunsenLabs/bunsen-themes
 
 ## 5. Translations
@@ -263,7 +262,7 @@ Suggested apps to use with labwc:
 See [integration] for further details.
 
 [wayland]: https://wayland.freedesktop.org/
-[openbox]: http://openbox.org/wiki/Help:Contents
+[openbox]: https://openbox.org/help/Contents
 [wlroots]: https://gitlab.freedesktop.org/wlroots/wlroots
 [sway]: https://github.com/swaywm
 [wayland-protocols]: https://gitlab.freedesktop.org/wayland/wayland-protocols

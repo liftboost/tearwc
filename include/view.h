@@ -57,6 +57,11 @@ enum view_axis {
 	VIEW_AXIS_HORIZONTAL = (1 << 0),
 	VIEW_AXIS_VERTICAL = (1 << 1),
 	VIEW_AXIS_BOTH = (VIEW_AXIS_HORIZONTAL | VIEW_AXIS_VERTICAL),
+	/*
+	 * If view_axis is treated as a bitfield, INVALID should never
+	 * set the HORIZONTAL or VERTICAL bits.
+	 */
+	VIEW_AXIS_INVALID = (1 << 2),
 };
 
 enum view_edge {
@@ -106,6 +111,7 @@ enum window_type {
 
 struct view;
 struct wlr_surface;
+struct foreign_toplevel;
 
 /* Common to struct view and struct xwayland_unmanaged */
 struct mappable {
@@ -260,16 +266,6 @@ struct view {
 		struct multi_rect *rect;
 	} resize_outlines;
 
-	struct foreign_toplevel {
-		struct wlr_foreign_toplevel_handle_v1 *handle;
-		struct wl_listener maximize;
-		struct wl_listener minimize;
-		struct wl_listener fullscreen;
-		struct wl_listener activate;
-		struct wl_listener close;
-		struct wl_listener destroy;
-	} toplevel;
-
 	struct mappable mappable;
 
 	struct wl_listener destroy;
@@ -281,6 +277,18 @@ struct view {
 	struct wl_listener request_maximize;
 	struct wl_listener request_fullscreen;
 	struct wl_listener set_title;
+
+	struct foreign_toplevel *foreign_toplevel;
+
+	struct {
+		struct wl_signal new_app_id;
+		struct wl_signal new_title;
+		struct wl_signal new_outputs;
+		struct wl_signal maximized;
+		struct wl_signal minimized;
+		struct wl_signal fullscreened;
+		struct wl_signal activated;     /* bool *activated */
+	} events;
 };
 
 struct view_query {
@@ -290,6 +298,16 @@ struct view_query {
 	int window_type;
 	char *sandbox_engine;
 	char *sandbox_app_id;
+	enum three_state shaded;
+	enum view_axis maximized;
+	enum three_state iconified;
+	enum three_state focused;
+	enum three_state omnipresent;
+	enum view_edge tiled;
+	char *tiled_region;
+	char *desktop;
+	enum ssd_mode decoration;
+	char *monitor;
 };
 
 struct xdg_toplevel_view {
@@ -565,6 +583,8 @@ void view_adjust_size(struct view *view, int *w, int *h);
 void view_evacuate_region(struct view *view);
 void view_on_output_destroy(struct view *view);
 void view_connect_map(struct view *view, struct wlr_surface *surface);
+
+void view_init(struct view *view);
 void view_destroy(struct view *view);
 
 enum view_axis view_axis_parse(const char *direction);

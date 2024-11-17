@@ -8,7 +8,9 @@
 #include "common/macros.h"
 #include "common/match.h"
 #include "common/mem.h"
+#include "common/parse-bool.h"
 #include "common/scene-helpers.h"
+#include "foreign-toplevel.h"
 #include "input/keyboard.h"
 #include "labwc.h"
 #include "menu/menu.h"
@@ -22,6 +24,7 @@
 #include "ssd.h"
 #include "view.h"
 #include "window-rules.h"
+#include "wlr/util/log.h"
 #include "workspaces.h"
 #include "xwayland.h"
 
@@ -69,6 +72,7 @@ view_query_create(void)
 {
 	struct view_query *query = znew(*query);
 	query->window_type = -1;
+	query->maximized = VIEW_AXIS_INVALID;
 	return query;
 }
 
@@ -76,53 +80,132 @@ void
 view_query_free(struct view_query *query)
 {
 	wl_list_remove(&query->link);
-	free(query->identifier);
-	free(query->title);
-	free(query->sandbox_engine);
-	free(query->sandbox_app_id);
-	free(query);
+	zfree(query->identifier);
+	zfree(query->title);
+	zfree(query->sandbox_engine);
+	zfree(query->sandbox_app_id);
+	zfree(query->tiled_region);
+	zfree(query->desktop);
+	zfree(query->monitor);
+	zfree(query);
+}
+
+static bool
+query_tristate_match(enum three_state desired, bool actual)
+{
+	switch (desired) {
+	case LAB_STATE_ENABLED:
+		return actual;
+	case LAB_STATE_DISABLED:
+		return !actual;
+	default:
+		return true;
+	}
+}
+
+static bool
+query_str_match(const char *condition, const char *value)
+{
+	if (!condition) {
+		return true;
+	}
+	return value && match_glob(condition, value);
 }
 
 bool
 view_matches_query(struct view *view, struct view_query *query)
 {
-	bool match = true;
-	bool empty = true;
-
-	const char *identifier = view_get_string_prop(view, "app_id");
-	if (match && query->identifier) {
-		empty = false;
-		match &= identifier && match_glob(query->identifier, identifier);
+	if (!query_str_match(query->identifier, view_get_string_prop(view, "app_id"))) {
+		return false;
 	}
 
-	const char *title = view_get_string_prop(view, "title");
-	if (match && query->title) {
-		empty = false;
-		match &= title && match_glob(query->title, title);
+	if (!query_str_match(query->title, view_get_string_prop(view, "title"))) {
+		return false;
 	}
 
-	if (match && query->window_type >= 0) {
-		empty = false;
-		match &= view_contains_window_type(view, query->window_type);
+	if (query->window_type >= 0 && !view_contains_window_type(view, query->window_type)) {
+		return false;
 	}
 
-	if (match && query->sandbox_engine) {
-		const struct wlr_security_context_v1_state *security_context =
+	if (query->sandbox_engine || query->sandbox_app_id) {
+		const struct wlr_security_context_v1_state *ctx =
 			security_context_from_view(view);
-		empty = false;
-		match &= security_context && security_context->sandbox_engine
-			&& match_glob(query->sandbox_engine, security_context->sandbox_engine);
+
+		if (!ctx) {
+			return false;
+		}
+
+		if (!query_str_match(query->sandbox_engine, ctx->sandbox_engine)) {
+			return false;
+		}
+
+		if (!query_str_match(query->sandbox_app_id, ctx->app_id)) {
+			return false;
+		}
 	}
 
-	if (match && query->sandbox_app_id) {
-		const struct wlr_security_context_v1_state *security_context =
-			security_context_from_view(view);
-		empty = false;
-		match &= security_context && security_context->app_id
-			&& match_glob(query->sandbox_app_id, security_context->app_id);
+	if (!query_tristate_match(query->shaded, view->shaded)) {
+		return false;
 	}
 
-	return !empty && match;
+	if (query->maximized != VIEW_AXIS_INVALID && view->maximized != query->maximized) {
+		return false;
+	}
+
+	if (!query_tristate_match(query->iconified, view->minimized)) {
+		return false;
+	}
+
+	if (!query_tristate_match(query->focused, view->server->active_view == view)) {
+		return false;
+	}
+
+	if (!query_tristate_match(query->omnipresent, view->visible_on_all_workspaces)) {
+		return false;
+	}
+
+	if (query->tiled != VIEW_EDGE_INVALID && query->tiled != view->tiled) {
+		return false;
+	}
+
+	const char *tiled_region =
+		view->tiled_region ? view->tiled_region->name : NULL;
+	if (!query_str_match(query->tiled_region, tiled_region)) {
+		return false;
+	}
+
+	if (query->desktop) {
+		const char *view_workspace = view->workspace->name;
+		struct workspace *current = view->server->workspaces.current;
+
+		if (!strcasecmp(query->desktop, "other")) {
+			/* "other" means the view is NOT on the current desktop */
+			if (!strcasecmp(view_workspace, current->name)) {
+				return false;
+			}
+		} else {
+			// TODO: perhaps wrap "left" and "right" workspaces
+			struct workspace *target =
+				workspaces_find(current, query->desktop, /* wrap */ false);
+			if (!target || strcasecmp(view_workspace, target->name)) {
+				return false;
+			}
+		}
+	}
+
+	enum ssd_mode decor = view_get_ssd_mode(view);
+	if (query->decoration != LAB_SSD_MODE_INVALID && query->decoration != decor) {
+		return false;
+	}
+
+	if (query->monitor) {
+		struct output *target = output_from_name(view->server, query->monitor);
+		if (target != view->output) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static bool
@@ -371,12 +454,15 @@ view_discover_output(struct view *view, struct wlr_box *geometry)
 static void
 set_adaptive_sync_fullscreen(struct view *view)
 {
+	if (!output_is_usable(view->output)) {
+		return;
+	}
 	if (rc.adaptive_sync != LAB_ADAPTIVE_SYNC_FULLSCREEN) {
 		return;
 	}
 	/* Enable adaptive sync if view is fullscreen */
-	output_enable_adaptive_sync(view->output->wlr_output, view->fullscreen);
-	wlr_output_commit(view->output->wlr_output);
+	output_enable_adaptive_sync(view->output, view->fullscreen);
+	output_state_commit(view->output);
 }
 
 void
@@ -387,10 +473,8 @@ view_set_activated(struct view *view, bool activated)
 	if (view->impl->set_activated) {
 		view->impl->set_activated(view, activated);
 	}
-	if (view->toplevel.handle) {
-		wlr_foreign_toplevel_handle_v1_set_activated(
-			view->toplevel.handle, activated);
-	}
+
+	wl_signal_emit_mutable(&view->events.activated, &activated);
 
 	if (rc.kb_layout_per_window) {
 		if (!activated) {
@@ -445,9 +529,7 @@ view_update_outputs(struct view *view)
 
 	if (new_outputs != view->outputs) {
 		view->outputs = new_outputs;
-		if (view->toplevel.handle) {
-			foreign_toplevel_update_outputs(view);
-		}
+		wl_signal_emit_mutable(&view->events.new_outputs, NULL);
 		desktop_update_top_layer_visiblity(view->server);
 	}
 }
@@ -653,14 +735,14 @@ _minimize(struct view *view, bool minimized)
 	if (view->minimized == minimized) {
 		return;
 	}
-	if (view->toplevel.handle) {
-		wlr_foreign_toplevel_handle_v1_set_minimized(
-			view->toplevel.handle, minimized);
-	}
+
 	if (view->impl->minimize) {
 		view->impl->minimize(view, minimized);
 	}
+
 	view->minimized = minimized;
+	wl_signal_emit_mutable(&view->events.minimized, NULL);
+
 	if (minimized) {
 		view->impl->unmap(view, /* client_request */ false);
 	} else {
@@ -901,7 +983,7 @@ view_cascade(struct view *view)
 	int offset_x = rc.placement_cascade_offset_x;
 	int offset_y = rc.placement_cascade_offset_y;
 	struct theme *theme = view->server->theme;
-	int default_offset = theme->title_height + theme->border_width + 5;
+	int default_offset = theme->titlebar_height + theme->border_width + 5;
 	if (offset_x <= 0) {
 		offset_x = default_offset;
 	}
@@ -1224,11 +1306,9 @@ set_maximized(struct view *view, enum view_axis maximized)
 	if (view->impl->maximize) {
 		view->impl->maximize(view, (maximized == VIEW_AXIS_BOTH));
 	}
-	if (view->toplevel.handle) {
-		wlr_foreign_toplevel_handle_v1_set_maximized(
-			view->toplevel.handle, (maximized == VIEW_AXIS_BOTH));
-	}
+
 	view->maximized = maximized;
+	wl_signal_emit_mutable(&view->events.maximized, NULL);
 
 	/*
 	 * Ensure that follow-up actions like SnapToEdge / SnapToRegion
@@ -1586,11 +1666,9 @@ set_fullscreen(struct view *view, bool fullscreen)
 	if (view->impl->set_fullscreen) {
 		view->impl->set_fullscreen(view, fullscreen);
 	}
-	if (view->toplevel.handle) {
-		wlr_foreign_toplevel_handle_v1_set_fullscreen(
-			view->toplevel.handle, fullscreen);
-	}
+
 	view->fullscreen = fullscreen;
+	wl_signal_emit_mutable(&view->events.fullscreened, NULL);
 
 	/* Re-show decorations when no longer fullscreen */
 	if (!fullscreen && view->ssd_enabled) {
@@ -1949,7 +2027,7 @@ enum view_axis
 view_axis_parse(const char *direction)
 {
 	if (!direction) {
-		return VIEW_AXIS_NONE;
+		return VIEW_AXIS_INVALID;
 	}
 	if (!strcasecmp(direction, "horizontal")) {
 		return VIEW_AXIS_HORIZONTAL;
@@ -1957,8 +2035,10 @@ view_axis_parse(const char *direction)
 		return VIEW_AXIS_VERTICAL;
 	} else if (!strcasecmp(direction, "both")) {
 		return VIEW_AXIS_BOTH;
-	} else {
+	} else if (!strcasecmp(direction, "none")) {
 		return VIEW_AXIS_NONE;
+	} else {
+		return VIEW_AXIS_INVALID;
 	}
 }
 
@@ -2243,11 +2323,12 @@ view_update_title(struct view *view)
 {
 	assert(view);
 	const char *title = view_get_string_prop(view, "title");
-	if (!view->toplevel.handle || !title) {
+	if (!title) {
 		return;
 	}
 	ssd_update_title(view->ssd);
-	wlr_foreign_toplevel_handle_v1_set_title(view->toplevel.handle, title);
+
+	wl_signal_emit_mutable(&view->events.new_title, NULL);
 }
 
 void
@@ -2255,15 +2336,15 @@ view_update_app_id(struct view *view)
 {
 	assert(view);
 	const char *app_id = view_get_string_prop(view, "app_id");
-	if (!view->toplevel.handle || !app_id) {
+	if (!app_id) {
 		return;
 	}
-	wlr_foreign_toplevel_handle_v1_set_app_id(
-		view->toplevel.handle, app_id);
 
 	if (view->ssd_enabled) {
 		ssd_update_window_icon(view->ssd);
 	}
+
+	wl_signal_emit_mutable(&view->events.new_app_id, NULL);
 }
 
 void
@@ -2382,6 +2463,20 @@ view_set_shade(struct view *view, bool shaded)
 }
 
 void
+view_init(struct view *view)
+{
+	assert(view);
+
+	wl_signal_init(&view->events.new_app_id);
+	wl_signal_init(&view->events.new_title);
+	wl_signal_init(&view->events.new_outputs);
+	wl_signal_init(&view->events.maximized);
+	wl_signal_init(&view->events.minimized);
+	wl_signal_init(&view->events.fullscreened);
+	wl_signal_init(&view->events.activated);
+}
+
+void
 view_destroy(struct view *view)
 {
 	assert(view);
@@ -2401,8 +2496,9 @@ view_destroy(struct view *view)
 	wl_list_remove(&view->set_title.link);
 	wl_list_remove(&view->destroy.link);
 
-	if (view->toplevel.handle) {
-		wlr_foreign_toplevel_handle_v1_destroy(view->toplevel.handle);
+	if (view->foreign_toplevel) {
+		foreign_toplevel_destroy(view->foreign_toplevel);
+		view->foreign_toplevel = NULL;
 	}
 
 	if (server->grabbed_view == view) {

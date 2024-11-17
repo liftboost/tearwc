@@ -39,20 +39,20 @@ ssd_thickness(struct view *view)
 	if (view->maximized == VIEW_AXIS_BOTH) {
 		struct border thickness = { 0 };
 		if (!view->ssd_titlebar_hidden) {
-			thickness.top += theme->title_height;
+			thickness.top += theme->titlebar_height;
 		}
 		return thickness;
 	}
 
 	struct border thickness = {
-		.top = theme->title_height + theme->border_width,
+		.top = theme->titlebar_height + theme->border_width,
 		.bottom = theme->border_width,
 		.left = theme->border_width,
 		.right = theme->border_width,
 	};
 
 	if (view->ssd_titlebar_hidden) {
-		thickness.top -= theme->title_height;
+		thickness.top -= theme->titlebar_height;
 	}
 	return thickness;
 }
@@ -176,7 +176,7 @@ ssd_create(struct view *view, bool active)
 	ssd->view = view;
 	ssd->tree = wlr_scene_tree_create(view->scene_tree);
 	wlr_scene_node_lower_to_bottom(&ssd->tree->node);
-	ssd->titlebar.height = view->server->theme->title_height;
+	ssd->titlebar.height = view->server->theme->titlebar_height;
 	ssd_shadow_create(ssd);
 	ssd_extents_create(ssd);
 	/*
@@ -271,7 +271,7 @@ ssd_set_titlebar(struct ssd *ssd, bool enabled)
 		return;
 	}
 	wlr_scene_node_set_enabled(&ssd->titlebar.tree->node, enabled);
-	ssd->titlebar.height = enabled ? ssd->view->server->theme->title_height : 0;
+	ssd->titlebar.height = enabled ? ssd->view->server->theme->titlebar_height : 0;
 	ssd_border_update(ssd);
 	ssd_extents_update(ssd);
 	ssd_shadow_update(ssd);
@@ -350,14 +350,16 @@ enum ssd_mode
 ssd_mode_parse(const char *mode)
 {
 	if (!mode) {
-		return LAB_SSD_MODE_FULL;
+		return LAB_SSD_MODE_INVALID;
 	}
 	if (!strcasecmp(mode, "none")) {
 		return LAB_SSD_MODE_NONE;
 	} else if (!strcasecmp(mode, "border")) {
 		return LAB_SSD_MODE_BORDER;
-	} else {
+	} else if (!strcasecmp(mode, "full")) {
 		return LAB_SSD_MODE_FULL;
+	} else {
+		return LAB_SSD_MODE_INVALID;
 	}
 }
 
@@ -402,7 +404,7 @@ ssd_enable_keybind_inhibit_indicator(struct ssd *ssd, bool enable)
 
 	float *color = enable
 		? rc.theme->window_toggled_keybinds_color
-		: rc.theme->window_active_border_color;
+		: rc.theme->window[THEME_ACTIVE].border_color;
 
 	struct ssd_part *part = ssd_get_part(&ssd->border.active.parts, LAB_SSD_PART_TOP);
 	struct wlr_scene_rect *rect = wlr_scene_rect_from_node(part->node);

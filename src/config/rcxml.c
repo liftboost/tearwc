@@ -270,8 +270,7 @@ fill_usable_area_override(char *nodename, char *content)
 	} else if (!current_usable_area_override) {
 		wlr_log(WLR_ERROR, "no usable-area-override object");
 	} else if (!strcmp(nodename, "output")) {
-		free(current_usable_area_override->output);
-		current_usable_area_override->output = xstrdup(content);
+		xstrdup_replace(current_usable_area_override->output, content);
 	} else if (!strcmp(nodename, "left")) {
 		current_usable_area_override->margin.left = atoi(content);
 	} else if (!strcmp(nodename, "right")) {
@@ -320,21 +319,17 @@ fill_window_rule(char *nodename, char *content)
 
 	/* Criteria */
 	} else if (!strcmp(nodename, "identifier")) {
-		free(current_window_rule->identifier);
-		current_window_rule->identifier = xstrdup(content);
+		xstrdup_replace(current_window_rule->identifier, content);
 	} else if (!strcmp(nodename, "title")) {
-		free(current_window_rule->title);
-		current_window_rule->title = xstrdup(content);
+		xstrdup_replace(current_window_rule->title, content);
 	} else if (!strcmp(nodename, "type")) {
 		current_window_rule->window_type = parse_window_type(content);
 	} else if (!strcasecmp(nodename, "matchOnce")) {
 		set_bool(content, &current_window_rule->match_once);
 	} else if (!strcasecmp(nodename, "sandboxEngine")) {
-		free(current_window_rule->sandbox_engine);
-		current_window_rule->sandbox_engine = xstrdup(content);
+		xstrdup_replace(current_window_rule->sandbox_engine, content);
 	} else if (!strcasecmp(nodename, "sandboxAppId")) {
-		free(current_window_rule->sandbox_app_id);
-		current_window_rule->sandbox_app_id = xstrdup(content);
+		xstrdup_replace(current_window_rule->sandbox_app_id, content);
 
 	/* Event */
 	} else if (!strcmp(nodename, "event")) {
@@ -464,15 +459,35 @@ fill_action_query(char *nodename, char *content, struct action *action)
 	}
 
 	if (!strcasecmp(nodename, "identifier")) {
-		current_view_query->identifier = xstrdup(content);
+		xstrdup_replace(current_view_query->identifier, content);
 	} else if (!strcasecmp(nodename, "title")) {
-		current_view_query->title = xstrdup(content);
+		xstrdup_replace(current_view_query->title, content);
 	} else if (!strcmp(nodename, "type")) {
 		current_view_query->window_type = parse_window_type(content);
 	} else if (!strcasecmp(nodename, "sandboxEngine")) {
-		current_view_query->sandbox_engine = xstrdup(content);
+		xstrdup_replace(current_view_query->sandbox_engine, content);
 	} else if (!strcasecmp(nodename, "sandboxAppId")) {
-		current_view_query->sandbox_app_id = xstrdup(content);
+		xstrdup_replace(current_view_query->sandbox_app_id, content);
+	} else if (!strcasecmp(nodename, "shaded")) {
+		current_view_query->shaded = parse_three_state(content);
+	} else if (!strcasecmp(nodename, "maximized")) {
+		current_view_query->maximized = view_axis_parse(content);
+	} else if (!strcasecmp(nodename, "iconified")) {
+		current_view_query->iconified = parse_three_state(content);
+	} else if (!strcasecmp(nodename, "focused")) {
+		current_view_query->focused = parse_three_state(content);
+	} else if (!strcasecmp(nodename, "omnipresent")) {
+		current_view_query->omnipresent = parse_three_state(content);
+	} else if (!strcasecmp(nodename, "tiled")) {
+		current_view_query->tiled = view_edge_parse(content);
+	} else if (!strcasecmp(nodename, "tiled_region")) {
+		xstrdup_replace(current_view_query->tiled_region, content);
+	} else if (!strcasecmp(nodename, "desktop")) {
+		xstrdup_replace(current_view_query->desktop, content);
+	} else if (!strcasecmp(nodename, "decoration")) {
+		current_view_query->decoration = ssd_mode_parse(content);
+	} else if (!strcasecmp(nodename, "monitor")) {
+		xstrdup_replace(current_view_query->monitor, content);
 	}
 }
 
@@ -630,9 +645,11 @@ fill_touch(char *nodename, char *content)
 		current_touch = znew(*current_touch);
 		wl_list_append(&rc.touch_configs, &current_touch->link);
 	} else if (!strcasecmp(nodename, "deviceName.touch")) {
-		current_touch->device_name = xstrdup(content);
+		xstrdup_replace(current_touch->device_name, content);
 	} else if (!strcasecmp(nodename, "mapToOutput.touch")) {
-		current_touch->output_name = xstrdup(content);
+		xstrdup_replace(current_touch->output_name, content);
+	} else if (!strcasecmp(nodename, "mouseEmulation.touch")) {
+		set_bool(content, &current_touch->force_mouse_emulation);
 	} else {
 		wlr_log(WLR_ERROR, "Unexpected data in touch parser: %s=\"%s\"",
 			nodename, content);
@@ -713,7 +730,7 @@ fill_libinput_category(char *nodename, char *content)
 		 * should be applicable to.
 		 */
 		if (current_libinput_category->type == LAB_LIBINPUT_DEVICE_NONE) {
-			current_libinput_category->name = xstrdup(content);
+			xstrdup_replace(current_libinput_category->name, content);
 		}
 	} else if (!strcasecmp(nodename, "naturalScroll")) {
 		set_bool_as_int(content, &current_libinput_category->natural_scroll);
@@ -828,8 +845,7 @@ static void
 set_font_attr(struct font *font, const char *nodename, const char *content)
 {
 	if (!strcmp(nodename, "name")) {
-		zfree(font->name);
-		font->name = xstrdup(content);
+		xstrdup_replace(font->name, content);
 	} else if (!strcmp(nodename, "size")) {
 		font->size = atoi(content);
 	} else if (!strcmp(nodename, "slant")) {
@@ -1057,9 +1073,9 @@ entry(xmlNode *node, char *nodename, char *content)
 	} else if (!strcasecmp(nodename, "reuseOutputMode.core")) {
 		set_bool(content, &rc.reuse_output_mode);
 	} else if (!strcmp(nodename, "policy.placement")) {
-		rc.placement_policy = view_placement_parse(content);
-		if (rc.placement_policy == LAB_PLACE_INVALID) {
-			rc.placement_policy = LAB_PLACE_CENTER;
+		enum view_placement_policy policy = view_placement_parse(content);
+		if (policy != LAB_PLACE_INVALID) {
+			rc.placement_policy = policy;
 		}
 	} else if (!strcasecmp(nodename, "xwaylandPersistence.core")) {
 		set_bool(content, &rc.xwayland_persistence);
@@ -1068,9 +1084,9 @@ entry(xmlNode *node, char *nodename, char *content)
 	} else if (!strcasecmp(nodename, "y.cascadeOffset.placement")) {
 		rc.placement_cascade_offset_y = atoi(content);
 	} else if (!strcmp(nodename, "name.theme")) {
-		rc.theme_name = xstrdup(content);
+		xstrdup_replace(rc.theme_name, content);
 	} else if (!strcmp(nodename, "icon.theme")) {
-		rc.icon_theme_name = xstrdup(content);
+		xstrdup_replace(rc.icon_theme_name, content);
 	} else if (!strcasecmp(nodename, "layout.titlebar.theme")) {
 		fill_title_layout(content);
 	} else if (!strcasecmp(nodename, "showTitle.titlebar.theme")) {
@@ -1200,7 +1216,7 @@ entry(xmlNode *node, char *nodename, char *content)
 	} else if (!strcasecmp(nodename, "number.desktops")) {
 		rc.workspace_config.min_nr_workspaces = MAX(1, atoi(content));
 	} else if (!strcasecmp(nodename, "prefix.desktops")) {
-		rc.workspace_config.prefix = xstrdup(content);
+		xstrdup_replace(rc.workspace_config.prefix, content);
 	} else if (!strcasecmp(nodename, "popupShow.resize")) {
 		if (!strcasecmp(content, "Always")) {
 			rc.resize_indicator = LAB_RESIZE_INDICATOR_ALWAYS;
@@ -1216,7 +1232,7 @@ entry(xmlNode *node, char *nodename, char *content)
 	} else if (!strcasecmp(nodename, "mouseEmulation.tablet")) {
 		set_bool(content, &rc.tablet.force_mouse_emulation);
 	} else if (!strcasecmp(nodename, "mapToOutput.tablet")) {
-		rc.tablet.output_name = xstrdup(content);
+		xstrdup_replace(rc.tablet.output_name, content);
 	} else if (!strcasecmp(nodename, "rotate.tablet")) {
 		rc.tablet.rotation = tablet_parse_rotation(atoi(content));
 	} else if (!strcasecmp(nodename, "left.area.tablet")) {
@@ -1412,7 +1428,7 @@ rcxml_init(void)
 	}
 	has_run = true;
 
-	rc.placement_policy = LAB_PLACE_CENTER;
+	rc.placement_policy = LAB_PLACE_CASCADE;
 	rc.placement_cascade_offset_x = 0;
 	rc.placement_cascade_offset_y = 0;
 
@@ -1604,7 +1620,7 @@ deduplicate_key_bindings(void)
 			if (keybind_the_same(existing, current)) {
 				wl_list_remove(&existing->link);
 				action_list_free(&existing->actions);
-				free(existing);
+				keybind_destroy(existing);
 				replaced++;
 				break;
 			}
@@ -1613,7 +1629,7 @@ deduplicate_key_bindings(void)
 	wl_list_for_each_safe(current, tmp, &rc.keybinds, link) {
 		if (wl_list_empty(&current->actions)) {
 			wl_list_remove(&current->link);
-			free(current);
+			keybind_destroy(current);
 			cleared++;
 		}
 	}
@@ -1904,6 +1920,7 @@ rcxml_finish(void)
 	zfree(rc.theme_name);
 	zfree(rc.icon_theme_name);
 	zfree(rc.workspace_config.prefix);
+	zfree(rc.tablet.output_name);
 
 	struct title_button *p, *p_tmp;
 	wl_list_for_each_safe(p, p_tmp, &rc.title_buttons_left, link) {
@@ -1926,8 +1943,7 @@ rcxml_finish(void)
 	wl_list_for_each_safe(k, k_tmp, &rc.keybinds, link) {
 		wl_list_remove(&k->link);
 		action_list_free(&k->actions);
-		zfree(k->keysyms);
-		zfree(k);
+		keybind_destroy(k);
 	}
 
 	struct mousebind *m, *m_tmp;
@@ -1944,8 +1960,6 @@ rcxml_finish(void)
 		zfree(touch_config->output_name);
 		zfree(touch_config);
 	}
-
-	zfree(rc.tablet.output_name);
 
 	struct libinput_category *l, *l_tmp;
 	wl_list_for_each_safe(l, l_tmp, &rc.libinput_categories, link) {

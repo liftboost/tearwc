@@ -366,7 +366,7 @@ action_arg_from_xml_node(struct action *action, const char *nodename, const char
 	case ACTION_TYPE_UNMAXIMIZE:
 		if (!strcmp(argument, "direction")) {
 			enum view_axis axis = view_axis_parse(content);
-			if (axis == VIEW_AXIS_NONE) {
+			if (axis == VIEW_AXIS_NONE || axis == VIEW_AXIS_INVALID) {
 				wlr_log(WLR_ERROR, "Invalid argument for action %s: '%s' (%s)",
 					action_names[action->type], argument, content);
 			} else {
@@ -378,7 +378,12 @@ action_arg_from_xml_node(struct action *action, const char *nodename, const char
 	case ACTION_TYPE_SET_DECORATIONS:
 		if (!strcmp(argument, "decorations")) {
 			enum ssd_mode mode = ssd_mode_parse(content);
-			action_arg_add_int(action, argument, mode);
+			if (mode != LAB_SSD_MODE_INVALID) {
+				action_arg_add_int(action, argument, mode);
+			} else {
+				wlr_log(WLR_ERROR, "Invalid argument for action %s: '%s' (%s)",
+					action_names[action->type], argument, content);
+			}
 			goto cleanup;
 		}
 		if (!strcasecmp(argument, "forceSSD")) {
@@ -683,19 +688,9 @@ show_menu(struct server *server, struct view *view, struct cursor_context *ctx,
 	if (pos_x && pos_y) {
 		struct output *output = output_nearest_to(server,
 				server->seat.cursor->x, server->seat.cursor->y);
-		struct menuitem *item;
-		struct theme *theme = server->theme;
-		int max_width = theme->menu_min_width;
-
-		wl_list_for_each(item, &menu->menuitems, link) {
-			if (item->native_width > max_width) {
-				max_width = item->native_width < theme->menu_max_width
-					? item->native_width : theme->menu_max_width;
-			}
-		}
 
 		if (!strcasecmp(pos_x, "center")) {
-			x = (output->usable_area.width / 2) - (max_width / 2);
+			x = (output->usable_area.width - menu->size.width) / 2;
 		} else if (strchr(pos_x, '%')) {
 			x = (output->usable_area.width * atoi(pos_x)) / 100;
 		} else {
@@ -721,9 +716,9 @@ show_menu(struct server *server, struct view *view, struct cursor_context *ctx,
 		}
 		/* keep menu from being off screen */
 		x = MAX(x, 0);
-		x = MIN(x, (output->usable_area.width -1));
+		x = MIN(x, output->usable_area.width - 1);
 		y = MAX(y, 0);
-		y = MIN(y, (output->usable_area.height -1));
+		y = MIN(y, output->usable_area.height - 1);
 		/* adjust for which monitor to appear on */
 		x += output->usable_area.x;
 		y += output->usable_area.y;

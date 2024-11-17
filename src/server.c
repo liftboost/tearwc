@@ -9,6 +9,8 @@
 #include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_drm.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
@@ -18,6 +20,7 @@
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_tablet_v2.h>
+
 #if HAVE_XWAYLAND
 #include <wlr/xwayland.h>
 #include "xwayland-shell-v1-protocol.h"
@@ -46,6 +49,7 @@
 #define LAB_WLR_COMPOSITOR_VERSION 5
 #define LAB_WLR_FRACTIONAL_SCALE_V1_VERSION 1
 #define LAB_WLR_LINUX_DMABUF_VERSION 4
+#define EXT_FOREIGN_TOPLEVEL_LIST_VERSION 1
 
 static struct wlr_compositor *compositor;
 static struct wl_event_source *sighup_source;
@@ -178,8 +182,8 @@ handle_drm_lease_request(struct wl_listener *listener, void *data)
 			continue;
 		}
 
-		wlr_output_enable(output->wlr_output, false);
-		wlr_output_commit(output->wlr_output);
+		wlr_output_state_set_enabled(&output->pending, false);
+		output_state_commit(output);
 
 		wlr_output_layout_remove(output->server->output_layout,
 			output->wlr_output);
@@ -548,6 +552,10 @@ server_init(struct server *server)
 	server->foreign_toplevel_manager =
 		wlr_foreign_toplevel_manager_v1_create(server->wl_display);
 
+	server->foreign_toplevel_list =
+		wlr_ext_foreign_toplevel_list_v1_create(
+			server->wl_display, EXT_FOREIGN_TOPLEVEL_LIST_VERSION);
+
 	session_lock_init(server);
 
 	server->drm_lease_manager = wlr_drm_lease_v1_manager_create(
@@ -620,18 +628,19 @@ server_finish(struct server *server)
 #if HAVE_XWAYLAND
 	xwayland_server_finish(server);
 #endif
+#if HAVE_LIBSFDO
+	icon_loader_finish(server);
+#endif
 	if (sighup_source) {
 		wl_event_source_remove(sighup_source);
 	}
 	wl_display_destroy_clients(server->wl_display);
-
+	wlr_allocator_destroy(server->allocator);
+	wlr_renderer_destroy(server->renderer);
+	wlr_backend_destroy(server->backend);
 	seat_finish(server);
-	wl_display_destroy(server->wl_display);
-
-	/* TODO: clean up various scene_tree nodes */
 	workspaces_destroy(server);
-
-#if HAVE_LIBSFDO
-	icon_loader_finish(server);
-#endif
+	wlr_scene_node_destroy(&server->scene->tree.node);
+	wl_display_destroy(server->wl_display);
+	free(server->ssd_hover_state);
 }

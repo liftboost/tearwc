@@ -16,7 +16,6 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
-#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -109,6 +108,7 @@ struct seat {
 	 * (in that case the client is expected to set its own cursor image).
 	 */
 	enum lab_cursors server_cursor;
+	bool cursor_visible;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *xcursor_manager;
 	struct {
@@ -179,6 +179,8 @@ struct seat {
 	struct wl_listener swipe_begin;
 	struct wl_listener swipe_update;
 	struct wl_listener swipe_end;
+	struct wl_listener hold_begin;
+	struct wl_listener hold_end;
 
 	struct wl_listener request_cursor;
 	struct wl_listener request_set_shape;
@@ -339,6 +341,7 @@ struct server {
 	struct session_lock_manager *session_lock_manager;
 
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct wlr_ext_foreign_toplevel_list_v1 *foreign_toplevel_list;
 
 	struct wlr_drm_lease_v1_manager *drm_lease_manager;
 	struct wl_listener drm_lease_request;
@@ -398,16 +401,12 @@ struct output {
 
 	struct wl_list regions;  /* struct region.link */
 
-	struct lab_data_buffer *osd_buffer;
-
 	struct wl_listener destroy;
 	struct wl_listener frame;
 	struct wl_listener request_state;
 
 	bool leased;
 	bool gamma_lut_changed;
-
-	uint32_t nr_tearing_failures;
 };
 
 #undef LAB_NR_LAYERS
@@ -420,9 +419,6 @@ struct constraint {
 
 void xdg_popup_create(struct view *view, struct wlr_xdg_popup *wlr_popup);
 void xdg_shell_init(struct server *server);
-
-void foreign_toplevel_handle_create(struct view *view);
-void foreign_toplevel_update_outputs(struct view *view);
 
 /*
  * desktop.c routines deal with a collection of views
@@ -491,6 +487,8 @@ void seat_finish(struct server *server);
 void seat_reconfigure(struct server *server);
 void seat_focus_surface(struct seat *seat, struct wlr_surface *surface);
 
+void seat_pointer_end_grab(struct seat *seat, struct wlr_surface *surface);
+
 /**
  * seat_focus_lock_surface() - ONLY to be called from session-lock.c to
  * focus lock screen surfaces. Use seat_focus_surface() otherwise.
@@ -549,7 +547,7 @@ struct wlr_box output_usable_area_in_layout_coords(struct output *output);
 struct wlr_box output_usable_area_scaled(struct output *output);
 void handle_output_power_manager_set_mode(struct wl_listener *listener,
 	void *data);
-void output_enable_adaptive_sync(struct wlr_output *output, bool enabled);
+void output_enable_adaptive_sync(struct output *output, bool enabled);
 
 /**
  * output_max_scale() - get maximum scale factor of all usable outputs.

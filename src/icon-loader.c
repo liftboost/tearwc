@@ -117,6 +117,7 @@ icon_loader_finish(struct server *server)
 		return;
 	}
 
+	sfdo_icon_theme_destroy(loader->icon_theme);
 	sfdo_desktop_db_destroy(loader->desktop_db);
 	sfdo_icon_ctx_destroy(loader->icon_ctx);
 	sfdo_desktop_ctx_destroy(loader->desktop_ctx);
@@ -236,6 +237,20 @@ get_db_entry_by_id_fuzzy(struct sfdo_desktop_db *db, const char *app_id)
 		}
 	}
 
+	/* Try matching partial strings - catches GIMP, among others */
+	for (size_t i = 0; i < n_entries; i++) {
+		struct sfdo_desktop_entry *entry = entries[i];
+		const char *desktop_id = sfdo_desktop_entry_get_id(entry, NULL);
+		const char *dot = strrchr(desktop_id, '.');
+		const char *desktop_id_base = dot ? (dot + 1) : desktop_id;
+		int alen = strlen(app_id);
+		int dlen = strlen(desktop_id_base);
+
+		if (!strncasecmp(app_id, desktop_id, alen > dlen ? dlen : alen)) {
+			return entry;
+		}
+	}
+
 	return NULL;
 }
 
@@ -275,6 +290,10 @@ icon_loader_lookup(struct server *server, const char *app_id, int size,
 	} else {
 		/* this should be the case for most icons */
 		ret = process_rel_name(&ctx, icon_name, loader, lookup_size, lookup_scale);
+		/* Icon defined in .desktop file could not be loaded, retry with app_id */
+		if (ret < 0) {
+			ret = process_rel_name(&ctx, app_id, loader, lookup_size, lookup_scale);
+		}
 	}
 	if (ret < 0) {
 		return NULL;

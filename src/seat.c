@@ -186,7 +186,7 @@ configure_libinput(struct wlr_input_device *wlr_input_device)
 		wlr_log(WLR_INFO, "pointer acceleration unavailable");
 	} else {
 		wlr_log(WLR_INFO, "pointer acceleration configured");
-		if (dc->pointer_speed > -1) {
+		if (dc->pointer_speed >= -1) {
 			libinput_device_config_accel_set_speed(libinput_dev,
 				dc->pointer_speed);
 		}
@@ -284,7 +284,7 @@ static void
 map_pointer_to_output(struct seat *seat, struct wlr_input_device *dev)
 {
 	struct wlr_pointer *pointer = wlr_pointer_from_input_device(dev);
-	wlr_log(WLR_INFO, "map pointer to output %s\n", pointer->output_name);
+	wlr_log(WLR_INFO, "map pointer to output %s", pointer->output_name);
 	map_input_to_output(seat, dev, pointer->output_name);
 }
 
@@ -353,7 +353,7 @@ map_touch_to_output(struct seat *seat, struct wlr_input_device *dev)
 	}
 
 	char *output_name = touch->output_name ? touch->output_name : touch_config_output_name;
-	wlr_log(WLR_INFO, "map touch to output %s\n", output_name ? output_name : "unknown");
+	wlr_log(WLR_INFO, "map touch to output %s", output_name ? output_name : "unknown");
 	map_input_to_output(seat, dev, output_name);
 }
 
@@ -378,7 +378,7 @@ new_tablet(struct seat *seat, struct wlr_input_device *dev)
 	input->wlr_input_device = dev;
 	tablet_create(seat, dev);
 	wlr_cursor_attach_input_device(seat->cursor, dev);
-	wlr_log(WLR_INFO, "map tablet to output %s\n", rc.tablet.output_name);
+	wlr_log(WLR_INFO, "map tablet to output %s", rc.tablet.output_name);
 	map_input_to_output(seat, dev, rc.tablet.output_name);
 
 	return input;
@@ -556,6 +556,7 @@ seat_init(struct server *server)
 	seat->input_method_relay = input_method_relay_create(seat);
 
 	seat->xcursor_manager = NULL;
+	seat->cursor_visible = true;
 	seat->cursor = wlr_cursor_create();
 	if (!seat->cursor) {
 		wlr_log(WLR_ERROR, "unable to create cursor");
@@ -582,6 +583,11 @@ seat_finish(struct server *server)
 		input_device_destroy(&input->destroy, NULL);
 	}
 
+	if (seat->workspace_osd_timer) {
+		wl_event_source_remove(seat->workspace_osd_timer);
+		seat->workspace_osd_timer = NULL;
+	}
+
 	input_handlers_finish(seat);
 	input_method_relay_finish(seat->input_method_relay);
 }
@@ -594,6 +600,28 @@ configure_keyboard(struct seat *seat, struct input *input)
 	struct keyboard *keyboard = (struct keyboard *)input;
 	struct wlr_keyboard *kb = wlr_keyboard_from_input_device(device);
 	keyboard_configure(seat, kb, keyboard->is_virtual);
+}
+
+void
+seat_pointer_end_grab(struct seat *seat, struct wlr_surface *surface)
+{
+	if (!surface || !wlr_seat_pointer_has_grab(seat->seat)) {
+		return;
+	}
+
+	struct wlr_xdg_surface *xdg_surface =
+		wlr_xdg_surface_try_from_wlr_surface(surface);
+	if (!xdg_surface || xdg_surface->role != WLR_XDG_SURFACE_ROLE_POPUP) {
+		/*
+		 * If we have an active popup grab (an open popup) and we are
+		 * not on the popup itself, end that grab to close the popup.
+		 * Contrary to pointer button notifications, a tablet/touch
+		 * button notification sometimes doesn't end grabs automatically
+		 * on button notifications in another client (observed in GTK4),
+		 * so end the grab manually.
+		 */
+		wlr_seat_pointer_end_grab(seat->seat);
+	}
 }
 
 /* This is called on SIGHUP (generally in response to labwc --reconfigure */

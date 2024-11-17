@@ -179,7 +179,7 @@ create_rounded_buffer(struct theme *theme, enum corner corner,
 	 * border. See the picture in #2189 for reference.
 	 */
 	int margin_x = theme->window_titlebar_padding_width;
-	int margin_y = (theme->title_height - theme->window_button_height) / 2;
+	int margin_y = (theme->titlebar_height - theme->window_button_height) / 2;
 	float white[4] = {1, 1, 1, 1};
 	struct rounded_corner_ctx rounded_ctx = {
 		.box = &(struct wlr_box){
@@ -562,22 +562,18 @@ theme_builtin(struct theme *theme, struct server *server)
 	theme->border_width = 1;
 	theme->window_titlebar_padding_height = 0;
 	theme->window_titlebar_padding_width = 0;
-	theme->title_height = INT_MIN;
-	theme->menu_overlap_x = 0;
-	theme->menu_overlap_y = 0;
 
-	parse_hexstr("#e1dedb", theme->window_active_border_color);
-	parse_hexstr("#f6f5f4", theme->window_inactive_border_color);
+	parse_hexstr("#e1dedb", theme->window[THEME_ACTIVE].border_color);
+	parse_hexstr("#f6f5f4", theme->window[THEME_INACTIVE].border_color);
 
 	parse_hexstr("#ff0000", theme->window_toggled_keybinds_color);
 
-	parse_hexstr("#e1dedb", theme->window_active_title_bg_color);
-	parse_hexstr("#f6f5f4", theme->window_inactive_title_bg_color);
+	parse_hexstr("#e1dedb", theme->window[THEME_ACTIVE].title_bg_color);
+	parse_hexstr("#f6f5f4", theme->window[THEME_INACTIVE].title_bg_color);
 
-	parse_hexstr("#000000", theme->window_active_label_text_color);
-	parse_hexstr("#000000", theme->window_inactive_label_text_color);
+	parse_hexstr("#000000", theme->window[THEME_ACTIVE].label_text_color);
+	parse_hexstr("#000000", theme->window[THEME_INACTIVE].label_text_color);
 	theme->window_label_text_justify = parse_justification("Center");
-	theme->menu_title_text_justify = parse_justification("Center");
 
 	theme->window_button_width = 26;
 	theme->window_button_height = 26;
@@ -592,21 +588,22 @@ theme_builtin(struct theme *theme, struct server *server)
 			theme->window[THEME_ACTIVE].button_colors[type]);
 	}
 
-	theme->window_active_shadow_size = 60;
-	theme->window_inactive_shadow_size = 40;
-	parse_hexstr("#00000060", theme->window_active_shadow_color);
-	parse_hexstr("#00000040", theme->window_inactive_shadow_color);
+	theme->window[THEME_ACTIVE].shadow_size = 60;
+	theme->window[THEME_INACTIVE].shadow_size = 40;
+	parse_hexstr("#00000060", theme->window[THEME_ACTIVE].shadow_color);
+	parse_hexstr("#00000040", theme->window[THEME_INACTIVE].shadow_color);
 
+	theme->menu_overlap_x = 0;
+	theme->menu_overlap_y = 0;
+	theme->menu_min_width = 20;
+	theme->menu_max_width = 200;
+
+	theme->menu_items_padding_x = 7;
+	theme->menu_items_padding_y = 4;
 	parse_hexstr("#fcfbfa", theme->menu_items_bg_color);
 	parse_hexstr("#000000", theme->menu_items_text_color);
 	parse_hexstr("#e1dedb", theme->menu_items_active_bg_color);
 	parse_hexstr("#000000", theme->menu_items_active_text_color);
-
-	theme->menu_item_padding_x = 7;
-	theme->menu_item_padding_y = 4;
-
-	theme->menu_min_width = 20;
-	theme->menu_max_width = 200;
 
 	theme->menu_separator_line_thickness = 1;
 	theme->menu_separator_padding_width = 6;
@@ -614,7 +611,7 @@ theme_builtin(struct theme *theme, struct server *server)
 	parse_hexstr("#888888", theme->menu_separator_color);
 
 	parse_hexstr("#589bda", theme->menu_title_bg_color);
-
+	theme->menu_title_text_justify = parse_justification("Center");
 	parse_hexstr("#ffffff", theme->menu_title_text_color);
 
 	theme->osd_window_switcher_width = 600;
@@ -708,36 +705,17 @@ entry(struct theme *theme, const char *key, const char *value)
 	if (match_glob(key, "padding.height")) {
 		wlr_log(WLR_ERROR, "padding.height is no longer supported");
 	}
-	if (match_glob(key, "menu.items.padding.x")) {
-		theme->menu_item_padding_x = get_int_if_positive(
-			value, "menu.items.padding.x");
-	}
-	if (match_glob(key, "menu.items.padding.y")) {
-		theme->menu_item_padding_y = get_int_if_positive(
-			value, "menu.items.padding.y");
-	}
-	if (match_glob(key, "menu.title.text.justify")) {
-		theme->menu_title_text_justify = parse_justification(value);
-	}
-	if (match_glob(key, "menu.overlap.x")) {
-		theme->menu_overlap_x = get_int_if_positive(
-			value, "menu.overlap.x");
-	}
-	if (match_glob(key, "menu.overlap.y")) {
-		theme->menu_overlap_y = get_int_if_positive(
-			value, "menu.overlap.y");
-	}
 
 	if (match_glob(key, "window.active.border.color")) {
-		parse_hexstr(value, theme->window_active_border_color);
+		parse_hexstr(value, theme->window[THEME_ACTIVE].border_color);
 	}
 	if (match_glob(key, "window.inactive.border.color")) {
-		parse_hexstr(value, theme->window_inactive_border_color);
+		parse_hexstr(value, theme->window[THEME_INACTIVE].border_color);
 	}
 	/* border.color is obsolete, but handled for backward compatibility */
 	if (match_glob(key, "border.color")) {
-		parse_hexstr(value, theme->window_active_border_color);
-		parse_hexstr(value, theme->window_inactive_border_color);
+		parse_hexstr(value, theme->window[THEME_ACTIVE].border_color);
+		parse_hexstr(value, theme->window[THEME_INACTIVE].border_color);
 	}
 
 	if (match_glob(key, "window.active.indicator.toggled-keybind.color")) {
@@ -745,17 +723,17 @@ entry(struct theme *theme, const char *key, const char *value)
 	}
 
 	if (match_glob(key, "window.active.title.bg.color")) {
-		parse_hexstr(value, theme->window_active_title_bg_color);
+		parse_hexstr(value, theme->window[THEME_ACTIVE].title_bg_color);
 	}
 	if (match_glob(key, "window.inactive.title.bg.color")) {
-		parse_hexstr(value, theme->window_inactive_title_bg_color);
+		parse_hexstr(value, theme->window[THEME_INACTIVE].title_bg_color);
 	}
 
 	if (match_glob(key, "window.active.label.text.color")) {
-		parse_hexstr(value, theme->window_active_label_text_color);
+		parse_hexstr(value, theme->window[THEME_ACTIVE].label_text_color);
 	}
 	if (match_glob(key, "window.inactive.label.text.color")) {
-		parse_hexstr(value, theme->window_inactive_label_text_color);
+		parse_hexstr(value, theme->window[THEME_INACTIVE].label_text_color);
 	}
 	if (match_glob(key, "window.label.text.justify")) {
 		theme->window_label_text_justify = parse_justification(value);
@@ -858,20 +836,26 @@ entry(struct theme *theme, const char *key, const char *value)
 
 	/* window drop-shadows */
 	if (match_glob(key, "window.active.shadow.size")) {
-		theme->window_active_shadow_size = get_int_if_positive(
+		theme->window[THEME_ACTIVE].shadow_size = get_int_if_positive(
 			value, "window.active.shadow.size");
 	}
 	if (match_glob(key, "window.inactive.shadow.size")) {
-		theme->window_inactive_shadow_size = get_int_if_positive(
+		theme->window[THEME_INACTIVE].shadow_size = get_int_if_positive(
 			value, "window.inactive.shadow.size");
 	}
 	if (match_glob(key, "window.active.shadow.color")) {
-		parse_hexstr(value, theme->window_active_shadow_color);
+		parse_hexstr(value, theme->window[THEME_ACTIVE].shadow_color);
 	}
 	if (match_glob(key, "window.inactive.shadow.color")) {
-		parse_hexstr(value, theme->window_inactive_shadow_color);
+		parse_hexstr(value, theme->window[THEME_INACTIVE].shadow_color);
 	}
 
+	if (match_glob(key, "menu.overlap.x")) {
+		theme->menu_overlap_x = atoi(value);
+	}
+	if (match_glob(key, "menu.overlap.y")) {
+		theme->menu_overlap_y = atoi(value);
+	}
 	if (match_glob(key, "menu.width.min")) {
 		theme->menu_min_width = get_int_if_positive(
 			value, "menu.width.min");
@@ -881,6 +865,14 @@ entry(struct theme *theme, const char *key, const char *value)
 			value, "menu.width.max");
 	}
 
+	if (match_glob(key, "menu.items.padding.x")) {
+		theme->menu_items_padding_x = get_int_if_positive(
+			value, "menu.items.padding.x");
+	}
+	if (match_glob(key, "menu.items.padding.y")) {
+		theme->menu_items_padding_y = get_int_if_positive(
+			value, "menu.items.padding.y");
+	}
 	if (match_glob(key, "menu.items.bg.color")) {
 		parse_hexstr(value, theme->menu_items_bg_color);
 	}
@@ -913,7 +905,9 @@ entry(struct theme *theme, const char *key, const char *value)
 	if (match_glob(key, "menu.title.bg.color")) {
 		parse_hexstr(value, theme->menu_title_bg_color);
 	}
-
+	if (match_glob(key, "menu.title.text.justify")) {
+		theme->menu_title_text_justify = parse_justification(value);
+	}
 	if (match_glob(key, "menu.title.text.color")) {
 		parse_hexstr(value, theme->menu_title_text_color);
 	}
@@ -1246,31 +1240,22 @@ create_corners(struct theme *theme)
 		.x = 0,
 		.y = 0,
 		.width = corner_width + theme->border_width,
-		.height = theme->title_height + theme->border_width,
+		.height = theme->titlebar_height + theme->border_width,
 	};
 
-	struct rounded_corner_ctx ctx = {
-		.box = &box,
-		.radius = rc.corner_radius,
-		.line_width = theme->border_width,
-		.fill_color = theme->window_active_title_bg_color,
-		.border_color = theme->window_active_border_color,
-		.corner = LAB_CORNER_TOP_LEFT,
-	};
-	theme->corner_top_left_active_normal = rounded_rect(&ctx);
-
-	ctx.fill_color = theme->window_inactive_title_bg_color,
-	ctx.border_color = theme->window_inactive_border_color,
-	theme->corner_top_left_inactive_normal = rounded_rect(&ctx);
-
-	ctx.corner = LAB_CORNER_TOP_RIGHT;
-	ctx.fill_color = theme->window_active_title_bg_color,
-	ctx.border_color = theme->window_active_border_color,
-	theme->corner_top_right_active_normal = rounded_rect(&ctx);
-
-	ctx.fill_color = theme->window_inactive_title_bg_color,
-	ctx.border_color = theme->window_inactive_border_color,
-	theme->corner_top_right_inactive_normal = rounded_rect(&ctx);
+	for (int active = THEME_INACTIVE; active <= THEME_ACTIVE; active++) {
+		struct rounded_corner_ctx ctx = {
+			.box = &box,
+			.radius = rc.corner_radius,
+			.line_width = theme->border_width,
+			.fill_color = theme->window[active].title_bg_color,
+			.border_color = theme->window[active].border_color,
+			.corner = LAB_CORNER_TOP_LEFT,
+		};
+		theme->window[active].corner_top_left_normal = rounded_rect(&ctx);
+		ctx.corner = LAB_CORNER_TOP_RIGHT;
+		theme->window[active].corner_top_right_normal = rounded_rect(&ctx);
+	}
 }
 
 /*
@@ -1388,68 +1373,50 @@ shadow_corner_gradient(struct lab_data_buffer *buffer, int visible_size,
 }
 
 static void
-create_shadows(struct theme *theme)
+create_shadow(struct theme *theme, int active)
 {
 	/* Size of shadow visible extending beyond the window */
-	int visible_active_size = theme->window_active_shadow_size;
-	int visible_inactive_size = theme->window_inactive_shadow_size;
+	int visible_size = theme->window[active].shadow_size;
 	/* How far inside the window the shadow inset begins */
-	int inset_active = (double)visible_active_size * SSD_SHADOW_INSET;
-	int inset_inactive = (double)visible_inactive_size * SSD_SHADOW_INSET;
+	int inset = (double)visible_size * SSD_SHADOW_INSET;
 	/* Total width including visible and obscured portion */
-	int total_active_size = visible_active_size + inset_active;
-	int total_inactive_size = visible_inactive_size + inset_inactive;
+	int total_size = visible_size + inset;
 
 	/*
 	 * Edge shadows don't need to be inset so the buffers are sized just for
 	 * the visible width.  Corners are inset so the buffers are larger for
 	 * this.
 	 */
-	if (visible_active_size > 0) {
-		theme->shadow_edge_active = buffer_create_cairo(
-			visible_active_size, 1, 1.0);
-		theme->shadow_corner_top_active = buffer_create_cairo(
-			total_active_size, total_active_size, 1.0);
-		theme->shadow_corner_bottom_active = buffer_create_cairo(
-			total_active_size, total_active_size, 1.0);
-		if (!theme->shadow_corner_top_active
-				|| !theme->shadow_corner_bottom_active
-				|| !theme->shadow_edge_active) {
-			wlr_log(WLR_ERROR, "Failed to allocate shadow buffer");
-			return;
-		}
-	}
-	if (visible_inactive_size > 0) {
-		theme->shadow_edge_inactive = buffer_create_cairo(
-			visible_inactive_size, 1, 1.0);
-		theme->shadow_corner_top_inactive = buffer_create_cairo(
-			total_inactive_size, total_inactive_size, 1.0);
-		theme->shadow_corner_bottom_inactive = buffer_create_cairo(
-			total_inactive_size, total_inactive_size, 1.0);
-		if (!theme->shadow_corner_top_inactive
-				|| !theme->shadow_corner_bottom_inactive
-				|| !theme->shadow_edge_inactive) {
+	if (visible_size > 0) {
+		theme->window[active].shadow_edge = buffer_create_cairo(
+			visible_size, 1, 1.0);
+		theme->window[active].shadow_corner_top = buffer_create_cairo(
+			total_size, total_size, 1.0);
+		theme->window[active].shadow_corner_bottom = buffer_create_cairo(
+			total_size, total_size, 1.0);
+		if (!theme->window[active].shadow_corner_top
+				|| !theme->window[active].shadow_corner_bottom
+				|| !theme->window[active].shadow_edge) {
 			wlr_log(WLR_ERROR, "Failed to allocate shadow buffer");
 			return;
 		}
 	}
 
-	shadow_edge_gradient(theme->shadow_edge_active, visible_active_size,
-		total_active_size, theme->window_active_shadow_color);
-	shadow_edge_gradient(theme->shadow_edge_inactive, visible_inactive_size,
-		total_inactive_size, theme->window_inactive_shadow_color);
-	shadow_corner_gradient(theme->shadow_corner_top_active,
-		visible_active_size, total_active_size,
-		theme->title_height, theme->window_active_shadow_color);
-	shadow_corner_gradient(theme->shadow_corner_bottom_active,
-		visible_active_size, total_active_size, 0,
-		theme->window_active_shadow_color);
-	shadow_corner_gradient(theme->shadow_corner_top_inactive,
-		visible_inactive_size, total_inactive_size,
-		theme->title_height, theme->window_inactive_shadow_color);
-	shadow_corner_gradient(theme->shadow_corner_bottom_inactive,
-		visible_inactive_size, total_inactive_size, 0,
-		theme->window_inactive_shadow_color);
+	shadow_edge_gradient(theme->window[active].shadow_edge, visible_size,
+		total_size, theme->window[active].shadow_color);
+	shadow_corner_gradient(theme->window[active].shadow_corner_top,
+		visible_size, total_size,
+		theme->titlebar_height, theme->window[active].shadow_color);
+	shadow_corner_gradient(theme->window[active].shadow_corner_bottom,
+		visible_size, total_size, 0,
+		theme->window[active].shadow_color);
+}
+
+static void
+create_shadows(struct theme *theme)
+{
+	create_shadow(theme, THEME_INACTIVE);
+	create_shadow(theme, THEME_ACTIVE);
 }
 
 static void
@@ -1475,17 +1442,20 @@ get_titlebar_height(struct theme *theme)
 static void
 post_processing(struct theme *theme)
 {
-	theme->title_height = get_titlebar_height(theme);
+	theme->titlebar_height = get_titlebar_height(theme);
 
 	theme->menu_item_height = font_height(&rc.font_menuitem)
-		+ 2 * theme->menu_item_padding_y;
+		+ 2 * theme->menu_items_padding_y;
+
+	theme->menu_header_height = font_height(&rc.font_menuheader)
+		+ 2 * theme->menu_items_padding_y;
 
 	theme->osd_window_switcher_item_height = font_height(&rc.font_osd)
 		+ 2 * theme->osd_window_switcher_item_padding_y
 		+ 2 * theme->osd_window_switcher_item_active_border_width;
 
-	if (rc.corner_radius >= theme->title_height) {
-		rc.corner_radius = theme->title_height - 1;
+	if (rc.corner_radius >= theme->titlebar_height) {
+		rc.corner_radius = theme->titlebar_height - 1;
 	}
 
 	int min_button_hover_radius =
@@ -1504,7 +1474,7 @@ post_processing(struct theme *theme)
 	/* Inherit OSD settings if not set */
 	if (theme->osd_bg_color[0] == FLT_MIN) {
 		memcpy(theme->osd_bg_color,
-			theme->window_active_title_bg_color,
+			theme->window[THEME_ACTIVE].title_bg_color,
 			sizeof(theme->osd_bg_color));
 	}
 	if (theme->osd_border_width == INT_MIN) {
@@ -1512,19 +1482,19 @@ post_processing(struct theme *theme)
 	}
 	if (theme->osd_label_text_color[0] == FLT_MIN) {
 		memcpy(theme->osd_label_text_color,
-			theme->window_active_label_text_color,
+			theme->window[THEME_ACTIVE].label_text_color,
 			sizeof(theme->osd_label_text_color));
 	}
 	if (theme->osd_border_color[0] == FLT_MIN) {
 		/*
-		 * As per http://openbox.org/wiki/Help:Themes#osd.border.color
-		 * we should fall back to window_active_border_color but
-		 * that is usually the same as window_active_title_bg_color
-		 * and thus the fallback for osd_bg_color. Which would mean
+		 * As per https://openbox.org/help/Themes#osd.border.color
+		 * we should fall back to window.active.border.color but
+		 * that is usually the same as window.active.title.bg.color
+		 * and thus the fallback for osd.bg.color. Which would mean
 		 * they are both the same color and thus the border is invisible.
 		 *
-		 * Instead, we fall back to osd_label_text_color which in turn
-		 * falls back to window_active_label_text_color.
+		 * Instead, we fall back to osd.label.text.color which in turn
+		 * falls back to window.active.label.text.color.
 		 */
 		memcpy(theme->osd_border_color, theme->osd_label_text_color,
 			sizeof(theme->osd_border_color));
@@ -1606,15 +1576,11 @@ theme_finish(struct theme *theme)
 		}
 	}
 
-	zdrop(&theme->corner_top_left_active_normal);
-	zdrop(&theme->corner_top_left_inactive_normal);
-	zdrop(&theme->corner_top_right_active_normal);
-	zdrop(&theme->corner_top_right_inactive_normal);
-
-	zdrop(&theme->shadow_corner_top_active);
-	zdrop(&theme->shadow_corner_bottom_active);
-	zdrop(&theme->shadow_edge_active);
-	zdrop(&theme->shadow_corner_top_inactive);
-	zdrop(&theme->shadow_corner_bottom_inactive);
-	zdrop(&theme->shadow_edge_inactive);
+	for (int active = THEME_INACTIVE; active <= THEME_ACTIVE; active++) {
+		zdrop(&theme->window[active].corner_top_left_normal);
+		zdrop(&theme->window[active].corner_top_right_normal);
+		zdrop(&theme->window[active].shadow_corner_top);
+		zdrop(&theme->window[active].shadow_corner_bottom);
+		zdrop(&theme->window[active].shadow_edge);
+	}
 }
