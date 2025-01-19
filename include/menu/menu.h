@@ -12,21 +12,6 @@ struct wlr_scene_tree;
 struct wlr_scene_node;
 struct scaled_font_buffer;
 
-enum menu_align {
-	LAB_MENU_OPEN_AUTO   = 0,
-	LAB_MENU_OPEN_LEFT   = 1 << 0,
-	LAB_MENU_OPEN_RIGHT  = 1 << 1,
-	LAB_MENU_OPEN_TOP    = 1 << 2,
-	LAB_MENU_OPEN_BOTTOM = 1 << 3,
-};
-
-struct menu_scene {
-	struct wlr_scene_tree *tree;
-	struct wlr_scene_node *text;
-	struct wlr_scene_node *background;
-	struct scaled_font_buffer *buffer;
-};
-
 enum menuitem_type {
 	LAB_MENU_ITEM = 0,
 	LAB_MENU_SEPARATOR_LINE,
@@ -45,8 +30,8 @@ struct menuitem {
 	enum menuitem_type type;
 	int native_width;
 	struct wlr_scene_tree *tree;
-	struct menu_scene normal;
-	struct menu_scene selected;
+	struct wlr_scene_tree *normal_tree;
+	struct wlr_scene_tree *selected_tree;
 	struct menu_pipe_context *pipe_ctx;
 	struct view *client_list_view;  /* used by internal client-list */
 	struct wl_list link; /* menu.menuitems */
@@ -57,6 +42,7 @@ struct menu {
 	char *id;
 	char *label;
 	struct menu *parent;
+	struct menu_pipe_context *pipe_ctx;
 
 	struct {
 		int width;
@@ -70,7 +56,7 @@ struct menu {
 	} selection;
 	struct wlr_scene_tree *scene_tree;
 	bool is_pipemenu;
-	enum menu_align align;
+	bool align_left;
 
 	/* Used to match a window-menu to the view that triggered it. */
 	struct view *triggered_by_view;  /* may be NULL */
@@ -101,7 +87,7 @@ struct menu *menu_get_by_id(struct server *server, const char *id);
  * This function will close server->menu_current, open the
  * new menu and assign @menu to server->menu_current.
  *
- * Additionally, server->input_mode wil be set to LAB_INPUT_STATE_MENU.
+ * Additionally, server->input_mode will be set to LAB_INPUT_STATE_MENU.
  */
 void menu_open_root(struct menu *menu, int x, int y);
 
@@ -131,7 +117,7 @@ bool menu_call_actions(struct wlr_scene_node *node);
  * This function will close server->menu_current and set it to NULL.
  * Asserts that server->input_mode is set to LAB_INPUT_STATE_MENU.
  *
- * Additionally, server->input_mode wil be set to LAB_INPUT_STATE_PASSTHROUGH.
+ * Additionally, server->input_mode will be set to LAB_INPUT_STATE_PASSTHROUGH.
  */
 void menu_close_root(struct server *server);
 

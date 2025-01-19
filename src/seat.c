@@ -305,14 +305,14 @@ new_pointer(struct seat *seat, struct wlr_input_device *dev)
 }
 
 static struct input *
-new_keyboard(struct seat *seat, struct wlr_input_device *device, bool virtual)
+new_keyboard(struct seat *seat, struct wlr_input_device *device, bool is_virtual)
 {
 	struct wlr_keyboard *kb = wlr_keyboard_from_input_device(device);
 
 	struct keyboard *keyboard = znew(*keyboard);
 	keyboard->base.wlr_input_device = device;
 	keyboard->wlr_keyboard = kb;
-	keyboard->is_virtual = virtual;
+	keyboard->is_virtual = is_virtual;
 
 	if (!seat->keyboard_group->keyboard.keymap) {
 		wlr_log(WLR_ERROR, "cannot set keymap");
@@ -329,7 +329,10 @@ new_keyboard(struct seat *seat, struct wlr_input_device *device, bool virtual)
 	 */
 	keyboard_set_numlock(kb);
 
-	if (!virtual) {
+	if (is_virtual) {
+		/* key repeat information is usually synchronized via the keyboard group */
+		wlr_keyboard_set_repeat_info(kb, rc.repeat_rate, rc.repeat_delay);
+	} else {
 		wlr_keyboard_group_add_keyboard(seat->keyboard_group, kb);
 	}
 
@@ -507,6 +510,14 @@ focus_change_notify(struct wl_listener *listener, void *data)
 		return;
 	}
 
+	/*
+	 * We clear the keyboard focus at the beginning of Move/Resize, window
+	 * switcher and opening menus, but don't want to deactivate the view.
+	 */
+	if (server->input_mode != LAB_INPUT_STATE_PASSTHROUGH) {
+		return;
+	}
+
 	if (view != server->active_view) {
 		if (server->active_view) {
 			view_set_activated(server->active_view, false);
@@ -656,8 +667,16 @@ seat_reconfigure(struct server *server)
 }
 
 static void
-seat_focus(struct seat *seat, struct wlr_surface *surface, bool is_lock_surface)
+seat_focus(struct seat *seat, struct wlr_surface *surface,
+		bool replace_exclusive_layer, bool is_lock_surface)
 {
+	/* Respect layer-shell exclusive keyboard-interactivity. */
+	if (seat->focused_layer && seat->focused_layer->current.keyboard_interactive
+			== ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+				&& !replace_exclusive_layer) {
+		return;
+	}
+
 	/*
 	 * Respect session lock. This check is critical, DO NOT REMOVE.
 	 * It should also come before the !surface condition, or the
@@ -708,18 +727,19 @@ seat_focus(struct seat *seat, struct wlr_surface *surface, bool is_lock_surface)
 void
 seat_focus_surface(struct seat *seat, struct wlr_surface *surface)
 {
-	/* Respect layer-shell exclusive keyboard-interactivity. */
-	if (seat->focused_layer && seat->focused_layer->current.keyboard_interactive
-			== ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+	/* Don't update focus while window switcher, Move/Resize and menu interaction */
+	if (seat->server->input_mode != LAB_INPUT_STATE_PASSTHROUGH) {
 		return;
 	}
-	seat_focus(seat, surface, /*is_lock_surface*/ false);
+	seat_focus(seat, surface, /*replace_exclusive_layer*/ false,
+		/*is_lock_surface*/ false);
 }
 
 void
 seat_focus_lock_surface(struct seat *seat, struct wlr_surface *surface)
 {
-	seat_focus(seat, surface, /*is_lock_surface*/ true);
+	seat_focus(seat, surface, /*replace_exclusive_layer*/ true,
+		/*is_lock_surface*/ true);
 }
 
 void
@@ -730,7 +750,8 @@ seat_set_focus_layer(struct seat *seat, struct wlr_layer_surface_v1 *layer)
 		desktop_focus_topmost_view(seat->server);
 		return;
 	}
-	seat_focus(seat, layer->surface, /*is_lock_surface*/ false);
+	seat_focus(seat, layer->surface, /*replace_exclusive_layer*/ true,
+		/*is_lock_surface*/ false);
 	seat->focused_layer = layer;
 }
 
@@ -793,4 +814,54 @@ seat_output_layout_changed(struct seat *seat)
 			break;
 		}
 	}
+}
+
+static void
+handle_focus_override_surface_destroy(struct wl_listener *listener, void *data)
+{
+	struct seat *seat = wl_container_of(listener, seat,
+		focus_override.surface_destroy);
+	wl_list_remove(&seat->focus_override.surface_destroy.link);
+	seat->focus_override.surface = NULL;
+}
+
+void
+seat_focus_override_begin(struct seat *seat, enum input_mode input_mode,
+	enum lab_cursors cursor_shape)
+{
+	assert(!seat->focus_override.surface);
+	assert(seat->server->input_mode == LAB_INPUT_STATE_PASSTHROUGH);
+
+	seat->server->input_mode = input_mode;
+
+	seat->focus_override.surface = seat->seat->keyboard_state.focused_surface;
+	if (seat->focus_override.surface) {
+		seat->focus_override.surface_destroy.notify =
+			handle_focus_override_surface_destroy;
+		wl_signal_add(&seat->focus_override.surface->events.destroy,
+			&seat->focus_override.surface_destroy);
+	}
+
+	seat_focus(seat, NULL, /*replace_exclusive_layer*/ false,
+		/*is_lock_surface*/ false);
+	wlr_seat_pointer_clear_focus(seat->seat);
+	cursor_set(seat, cursor_shape);
+}
+
+void
+seat_focus_override_end(struct seat *seat)
+{
+	seat->server->input_mode = LAB_INPUT_STATE_PASSTHROUGH;
+
+	if (seat->focus_override.surface) {
+		if (!seat->seat->keyboard_state.focused_surface) {
+			seat_focus(seat, seat->focus_override.surface,
+				/*replace_exclusive_layer*/ false,
+				/*is_lock_surface*/ false);
+		}
+		wl_list_remove(&seat->focus_override.surface_destroy.link);
+		seat->focus_override.surface = NULL;
+	}
+
+	cursor_update_focus(seat->server);
 }

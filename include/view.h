@@ -10,6 +10,7 @@
 #include <wayland-util.h>
 #include <wlr/util/box.h>
 #include <xkbcommon/xkbcommon.h>
+#include "common/three-state.h"
 
 #define LAB_MIN_VIEW_HEIGHT 60
 
@@ -39,12 +40,6 @@ enum ssd_preference {
 	LAB_SSD_PREF_UNSPEC = 0,
 	LAB_SSD_PREF_CLIENT,
 	LAB_SSD_PREF_SERVER,
-};
-
-enum three_state {
-	LAB_STATE_UNSPECIFIED = 0,
-	LAB_STATE_ENABLED,
-	LAB_STATE_DISABLED
 };
 
 /**
@@ -198,7 +193,7 @@ struct view {
 	struct workspace *workspace;
 	struct wlr_surface *surface;
 	struct wlr_scene_tree *scene_tree;
-	struct wlr_scene_node *scene_node;
+	struct wlr_scene_node *content_node;
 
 	bool mapped;
 	bool been_mapped;
@@ -381,10 +376,26 @@ bool view_matches_query(struct view *view, struct view_query *query);
  *		printf("%s\n", view_get_string_prop(view, "app_id"));
  *	}
  */
-#define for_each_view(view, head, criteria)		\
-	for (view = view_next(head, NULL, criteria);	\
-	     view;					\
+#define for_each_view(view, head, criteria)           \
+	for (view = view_next(head, NULL, criteria);  \
+	     view;                                    \
 	     view = view_next(head, view, criteria))
+
+/**
+ * for_each_view_reverse() - iterate over all views which match criteria
+ * @view: Iterator.
+ * @head: Head of list to iterate over.
+ * @criteria: Criteria to match against.
+ * Example:
+ *	struct view *view;
+ *	for_each_view_reverse(view, &server->views, LAB_VIEW_CRITERIA_NONE) {
+ *		printf("%s\n", view_get_string_prop(view, "app_id"));
+ *	}
+ */
+#define for_each_view_reverse(view, head, criteria)   \
+	for (view = view_prev(head, NULL, criteria);  \
+	     view;                                    \
+	     view = view_prev(head, view, criteria))
 
 /**
  * view_next() - Get next view which matches criteria.
@@ -396,6 +407,18 @@ bool view_matches_query(struct view *view, struct view_query *query);
  * Returns NULL if there are no views matching the criteria.
  */
 struct view *view_next(struct wl_list *head, struct view *view,
+	enum lab_view_criteria criteria);
+
+/**
+ * view_prev() - Get previous view which matches criteria.
+ * @head: Head of list to iterate over.
+ * @view: Current view from which to find the previous one. If NULL is provided
+ *        as the view argument, the end of the list will be used.
+ * @criteria: Criteria to match against.
+ *
+ * Returns NULL if there are no views matching the criteria.
+ */
+struct view *view_prev(struct wl_list *head, struct view *view,
 	enum lab_view_criteria criteria);
 
 /*

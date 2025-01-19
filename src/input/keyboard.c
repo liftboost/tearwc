@@ -6,6 +6,7 @@
 #include <wlr/backend/session.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include "action.h"
+#include "common/three-state.h"
 #include "idle.h"
 #include "input/ime.h"
 #include "input/keyboard.h"
@@ -53,31 +54,46 @@ change_vt(struct server *server, unsigned int vt)
 	wlr_session_change_vt(server->session, vt);
 }
 
-bool
-keyboard_any_modifiers_pressed(struct wlr_keyboard *keyboard)
+uint32_t
+keyboard_get_all_modifiers(struct seat *seat)
 {
-	xkb_mod_index_t i;
-	for (i = 0; i < xkb_keymap_num_mods(keyboard->keymap); i++) {
-		if (xkb_state_mod_index_is_active(keyboard->xkb_state,
-				i, XKB_STATE_MODS_DEPRESSED)) {
-			return true;
+	/*
+	 * As virtual keyboards like used by wayvnc are not part of the keyboard group,
+	 * we need to additionally get the modifiers of the virtual keyboards in addition
+	 * to the physical ones in the keyboard group. This ensures that mousebinds with
+	 * keyboard modifiers are detected correctly when using for example a VNC client
+	 * via wayvnc to control labwc. This function also gets called to decide when to
+	 * hide the window switcher and workspace OSDs and to indicate if the user wants
+	 * to snap a window to a region during a window move operation.
+	 */
+	struct input *input;
+	uint32_t modifiers = wlr_keyboard_get_modifiers(&seat->keyboard_group->keyboard);
+	wl_list_for_each(input, &seat->inputs, link) {
+		if (input->wlr_input_device->type != WLR_INPUT_DEVICE_KEYBOARD) {
+			continue;
+		}
+		struct keyboard *kb = wl_container_of(input, kb, base);
+		if (kb->is_virtual) {
+			modifiers |= wlr_keyboard_get_modifiers(kb->wlr_keyboard);
 		}
 	}
-	return false;
+	return modifiers;
 }
 
 static void
 end_cycling(struct server *server)
 {
-	osd_preview_restore(server);
-	if (server->osd_state.cycle_view) {
-		desktop_focus_view(server->osd_state.cycle_view,
-			/*raise*/ true);
+	should_cancel_cycling_on_next_key_release = false;
+
+	if (server->input_mode != LAB_INPUT_STATE_WINDOW_SWITCHER) {
+		return;
 	}
 
-	/* osd_finish() additionally resets cycle_view to NULL */
+	struct view *cycle_view = server->osd_state.cycle_view;
+	/* FIXME: osd_finish() transiently sets focus to the old surface */
 	osd_finish(server);
-	should_cancel_cycling_on_next_key_release = false;
+	/* Note that server->osd_state.cycle_view is cleared at this point */
+	desktop_focus_view(cycle_view, /*raise*/ true);
 }
 
 static struct wlr_seat_client *
@@ -132,10 +148,12 @@ keyboard_modifiers_notify(struct wl_listener *listener, void *data)
 		overlay_update(seat);
 	}
 
-	if (server->osd_state.cycle_view
-			|| seat->workspace_osd_shown_by_modifier) {
-		if (!keyboard_any_modifiers_pressed(wlr_keyboard)) {
-			if (server->osd_state.cycle_view) {
+	bool window_switcher_active = server->input_mode
+					== LAB_INPUT_STATE_WINDOW_SWITCHER;
+
+	if (window_switcher_active || seat->workspace_osd_shown_by_modifier) {
+		if (!keyboard_get_all_modifiers(seat)) {
+			if (window_switcher_active) {
 				if (key_state_nr_bound_keys()) {
 					should_cancel_cycling_on_next_key_release = true;
 				} else {
@@ -443,62 +461,35 @@ handle_menu_keys(struct server *server, struct keysyms *syms)
 	}
 }
 
-static void
-toggle_direction(enum lab_cycle_dir *direction)
-{
-	if (*direction == LAB_CYCLE_DIR_FORWARD) {
-		*direction = LAB_CYCLE_DIR_BACKWARD;
-	} else if (*direction == LAB_CYCLE_DIR_BACKWARD) {
-		*direction = LAB_CYCLE_DIR_FORWARD;
-	}
-}
-
-static void
+/* Returns true if the keystroke is consumed */
+static bool
 handle_cycle_view_key(struct server *server, struct keyinfo *keyinfo)
 {
-	for (int i = 0; i < keyinfo->translated.nr_syms; i++) {
-		if (keyinfo->translated.syms[i] == XKB_KEY_Escape) {
-			/* cancel view-cycle */
-			osd_preview_restore(server);
-			osd_finish(server);
-			return;
-		}
+	if (keyinfo->is_modifier) {
+		return false;
 	}
 
 	/* cycle to next */
-	if (!keyinfo->is_modifier) {
-		enum lab_cycle_dir direction = server->osd_state.initial_direction;
-		for (int i = 0; i < keyinfo->translated.nr_syms; i++) {
-			if (keyinfo->translated.syms[i] == XKB_KEY_Up
-					|| keyinfo->translated.syms[i] == XKB_KEY_Left) {
-				direction = LAB_CYCLE_DIR_BACKWARD;
-				goto miss_shift_toggle;
-			}
-			if (keyinfo->translated.syms[i] == XKB_KEY_Down
-					|| keyinfo->translated.syms[i] == XKB_KEY_Right) {
-				direction = LAB_CYCLE_DIR_FORWARD;
-				goto miss_shift_toggle;
-			}
+	for (int i = 0; i < keyinfo->translated.nr_syms; i++) {
+		if (keyinfo->translated.syms[i] == XKB_KEY_Escape) {
+			/* Esc deactivates window switcher */
+			osd_finish(server);
+			return true;
 		}
-
-		bool shift_is_pressed = keyinfo->modifiers & WLR_MODIFIER_SHIFT;
-		if (shift_is_pressed != server->osd_state.initial_keybind_contained_shift) {
-			/*
-			 * Shift reverses the direction - unless shift was part of the
-			 * original keybind in which case we do the opposite.
-			 * For example with S-A-Tab bound to PreviousWindow, shift with
-			 * subsequent key presses should carry on cycling backwards.
-			 */
-			toggle_direction(&direction);
+		if (keyinfo->translated.syms[i] == XKB_KEY_Up
+				|| keyinfo->translated.syms[i] == XKB_KEY_Left) {
+			/* Up/Left cycles the window backward */
+			osd_cycle(server, LAB_CYCLE_DIR_BACKWARD);
+			return true;
 		}
-
-	/* Only one direction modifier is allowed, either arrow keys OR shift */
-miss_shift_toggle:
-
-		server->osd_state.cycle_view = desktop_cycle_view(server,
-			server->osd_state.cycle_view, direction);
-		osd_update(server);
+		if (keyinfo->translated.syms[i] == XKB_KEY_Down
+				|| keyinfo->translated.syms[i] == XKB_KEY_Right) {
+			/* Down/Right cycles the window forward */
+			osd_cycle(server, LAB_CYCLE_DIR_FORWARD);
+			return true;
+		}
 	}
+	return false;
 }
 
 static enum lab_key_handled
@@ -512,8 +503,7 @@ handle_compositor_keybindings(struct keyboard *keyboard,
 	bool locked = seat->server->session_lock_manager->locked;
 
 	key_state_set_pressed(event->keycode,
-		event->state == WL_KEYBOARD_KEY_STATE_PRESSED,
-		keyinfo.is_modifier);
+		event->state == WL_KEYBOARD_KEY_STATE_PRESSED);
 
 	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
 		if (cur_keybind && cur_keybind->on_release) {
@@ -545,12 +535,11 @@ handle_compositor_keybindings(struct keyboard *keyboard,
 			key_state_store_pressed_key_as_bound(event->keycode);
 			handle_menu_keys(server, &keyinfo.translated);
 			return true;
-		}
-
-		if (server->osd_state.cycle_view) {
-			key_state_store_pressed_key_as_bound(event->keycode);
-			handle_cycle_view_key(server, &keyinfo);
-			return true;
+		} else if (server->input_mode == LAB_INPUT_STATE_WINDOW_SWITCHER) {
+			if (handle_cycle_view_key(server, &keyinfo)) {
+				key_state_store_pressed_key_as_bound(event->keycode);
+				return true;
+			}
 		}
 	}
 
@@ -622,6 +611,19 @@ keyboard_cancel_keybind_repeat(struct keyboard *keyboard)
 	}
 }
 
+void
+keyboard_cancel_all_keybind_repeats(struct seat *seat)
+{
+	struct input *input;
+	struct keyboard *kb;
+	wl_list_for_each(input, &seat->inputs, link) {
+		if (input->wlr_input_device->type == WLR_INPUT_DEVICE_KEYBOARD) {
+			kb = wl_container_of(input, kb, base);
+			keyboard_cancel_keybind_repeat(kb);
+		}
+	}
+}
+
 static void
 keyboard_key_notify(struct wl_listener *listener, void *data)
 {
@@ -662,6 +664,10 @@ keyboard_key_notify(struct wl_listener *listener, void *data)
 void
 keyboard_set_numlock(struct wlr_keyboard *keyboard)
 {
+	if (rc.kb_numlock_enable == LAB_STATE_UNSPECIFIED) {
+		return;
+	}
+
 	xkb_mod_index_t num_idx =
 		xkb_map_mod_get_index(keyboard->keymap, XKB_MOD_NAME_NUM);
 	if (num_idx == XKB_MOD_INVALID) {
@@ -670,9 +676,9 @@ keyboard_set_numlock(struct wlr_keyboard *keyboard)
 	}
 
 	xkb_mod_mask_t locked = keyboard->modifiers.locked;
-	if (rc.kb_numlock_enable) {
+	if (rc.kb_numlock_enable == LAB_STATE_ENABLED) {
 		locked |= (xkb_mod_mask_t)1 << num_idx;
-	} else {
+	} else if (rc.kb_numlock_enable == LAB_STATE_DISABLED) {
 		locked &= ~((xkb_mod_mask_t)1 << num_idx);
 	}
 

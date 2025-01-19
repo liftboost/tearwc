@@ -19,14 +19,12 @@ _create_buffer(struct scaled_scene_buffer *scaled_buffer, double scale)
 
 	/* Buffer gets free'd automatically along the backing wlr_buffer */
 	font_buffer_create(&buffer, self->max_width, self->text,
-		&self->font, self->color, self->bg_color, self->arrow, scale);
+		&self->font, self->color, self->bg_color, scale);
 
 	if (!buffer) {
 		wlr_log(WLR_ERROR, "font_buffer_create() failed");
 	}
 
-	self->width = buffer ? buffer->logical_width : 0;
-	self->height = buffer ? buffer->logical_height : 0;
 	return buffer;
 }
 
@@ -38,13 +36,35 @@ _destroy(struct scaled_scene_buffer *scaled_buffer)
 
 	zfree(self->text);
 	zfree(self->font.name);
-	zfree(self->arrow);
 	free(self);
+}
+
+static bool str_equal(const char *a, const char *b)
+{
+	return a == b || (a && b && !strcmp(a, b));
+}
+
+static bool
+_equal(struct scaled_scene_buffer *scaled_buffer_a,
+	struct scaled_scene_buffer *scaled_buffer_b)
+{
+	struct scaled_font_buffer *a = scaled_buffer_a->data;
+	struct scaled_font_buffer *b = scaled_buffer_b->data;
+
+	return str_equal(a->text, b->text)
+		&& a->max_width == b->max_width
+		&& str_equal(a->font.name, b->font.name)
+		&& a->font.size == b->font.size
+		&& a->font.slant == b->font.slant
+		&& a->font.weight == b->font.weight
+		&& !memcmp(a->color, b->color, sizeof(a->color))
+		&& !memcmp(a->bg_color, b->bg_color, sizeof(a->bg_color));
 }
 
 static const struct scaled_scene_buffer_impl impl = {
 	.create_buffer = _create_buffer,
-	.destroy = _destroy
+	.destroy = _destroy,
+	.equal = _equal,
 };
 
 /* Public API */
@@ -53,8 +73,8 @@ scaled_font_buffer_create(struct wlr_scene_tree *parent)
 {
 	assert(parent);
 	struct scaled_font_buffer *self = znew(*self);
-	struct scaled_scene_buffer *scaled_buffer =
-		scaled_scene_buffer_create(parent, &impl, /* drop_buffer */ true);
+	struct scaled_scene_buffer *scaled_buffer = scaled_scene_buffer_create(
+		parent, &impl, /* drop_buffer */ true);
 	if (!scaled_buffer) {
 		free(self);
 		return NULL;
@@ -69,7 +89,7 @@ scaled_font_buffer_create(struct wlr_scene_tree *parent)
 void
 scaled_font_buffer_update(struct scaled_font_buffer *self, const char *text,
 		int max_width, struct font *font, const float *color,
-		const float *bg_color, const char *arrow)
+		const float *bg_color)
 {
 	assert(self);
 	assert(text);
@@ -79,7 +99,6 @@ scaled_font_buffer_update(struct scaled_font_buffer *self, const char *text,
 	/* Clean up old internal state */
 	zfree(self->text);
 	zfree(self->font.name);
-	zfree(self->arrow);
 
 	/* Update internal state */
 	self->text = xstrdup(text);
@@ -92,15 +111,21 @@ scaled_font_buffer_update(struct scaled_font_buffer *self, const char *text,
 	self->font.weight = font->weight;
 	memcpy(self->color, color, sizeof(self->color));
 	memcpy(self->bg_color, bg_color, sizeof(self->bg_color));
-	self->arrow = arrow ? xstrdup(arrow) : NULL;
 
-	/* Invalidate cache and force a new render */
-	scaled_scene_buffer_invalidate_cache(self->scaled_buffer);
+	/* Calculate the size of font buffer and request re-rendering */
+	font_get_buffer_size(self->max_width, self->text, &self->font,
+		&self->width, &self->height);
+	scaled_scene_buffer_request_update(self->scaled_buffer,
+		self->width, self->height);
 }
 
 void
 scaled_font_buffer_set_max_width(struct scaled_font_buffer *self, int max_width)
 {
 	self->max_width = max_width;
-	scaled_scene_buffer_invalidate_cache(self->scaled_buffer);
+
+	font_get_buffer_size(self->max_width, self->text, &self->font,
+		&self->width, &self->height);
+	scaled_scene_buffer_request_update(self->scaled_buffer,
+		self->width, self->height);
 }

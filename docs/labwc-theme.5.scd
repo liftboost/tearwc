@@ -9,6 +9,11 @@ labwc - theme files
 The theme engine aims to be compatible with openbox and themes will be
 searched for in the following order:
 
+- ${XDG_DATA_HOME:-$HOME/.local/share}/themes/<theme-name>/labwc/
+- $HOME/.themes/<theme-name>/labwc/
+- /usr/share/themes/<theme-name>/labwc/
+- /usr/local/share/themes/<theme-name>/labwc/
+- /opt/share/themes/<theme-name>/labwc/
 - ${XDG_DATA_HOME:-$HOME/.local/share}/themes/<theme-name>/openbox-3/
 - $HOME/.themes/<theme-name>/openbox-3/
 - /usr/share/themes/<theme-name>/openbox-3/
@@ -60,31 +65,33 @@ labwc-config(5).
 	Default is 0.
 
 *window.active.border.color*
-	Border color of active window.
+	Border color of active window. Default is #aaaaaa.
 
 *window.inactive.border.color*
-	Border color of inactive window.
+	Border color of inactive window. Default is #aaaaaa.
 
 *window.active.indicator.toggled-keybind.color*
 	Status indicator for the ToggleKeybinds action. Can be set to the same
 	value as set for window.active.border.color to disable the status
-	indicator.
+	indicator. Default is #ff0000.
 
 *window.active.title.bg.color*
 	Background color for the focused window's titlebar.
+	Default is #e1dedb.
 
 *window.inactive.title.bg.color*
 	Background color for non-focused windows' titlebars.
+	Default is #f6f5f4.
 
 *window.active.label.text.color*
-	Text color for the focused window's titlebar.
+	Text color for the focused window's titlebar. Default is #000000.
 
 *window.inactive.label.text.color*
-	Text color non-focused windows' titlebars.
+	Text color non-focused windows' titlebars. Default is #000000.
 
 *window.label.text.justify*
 	Specifies how window titles are aligned in the titlebar for both
-	focused and unfocused windows. Type justification. Default Left.
+	focused and unfocused windows. Type justification. Default is Left.
 
 *window.button.width*
 	Width of a titlebar button, in pixels.
@@ -108,11 +115,11 @@ labwc-config(5).
 
 *window.active.button.unpressed.image.color*
 	Color of the images in titlebar buttons in their default, unpressed,
-	state. This element is for the focused window.
+	state. This element is for the focused window. Default is #000000.
 
 *window.inactive.button.unpressed.image.color*
 	Color of the images in titlebar buttons in their default, unpressed,
-	state. This element is for non-focused windows.
+	state. This element is for non-focused windows. Default is #000000.
 
 Note: Button elements (i.e. window.[in]active.button.\*) may be defined uniquely
 for each type of button ("menu", "iconify", "max", "shade", "desk" or "close")
@@ -164,6 +171,12 @@ all are supported.
 	A fixed width can be achieved by setting .min and .max to the same
 	value.
 
+*menu.border.width*
+	Border width of menus in pixels. Inherits *border.width* if not set.
+
+*menu.border.color*
+	Border color of menus. Inherits *window.active.border.color* if not set.
+
 *menu.items.padding.x*
 	Horizontal padding of menu text entries in pixels.
 	Default is 7.
@@ -173,39 +186,39 @@ all are supported.
 	Default is 4.
 
 *menu.items.bg.color*
-	Background color of inactive menu items.
+	Background color of inactive menu items. Default is #fcfbfa.
 
 *menu.items.text.color*
-	Text color of inactive menu item.
+	Text color of inactive menu item. Default is #000000.
 
 *menu.items.active.bg.color*
-	Background color of active menu items.
+	Background color of active menu items. Default is #e1dedb.
 
 *menu.items.active.text.color*
-	Text color of active menu item.
+	Text color of active menu item. Default is #000000.
 
 *menu.separator.width*
-	Line thickness of menu separators. Default 1.
+	Line thickness of menu separators. Default is 1.
 
 *menu.separator.padding.width*
-	Space on the left and right side of each separator line. Default 6.
+	Space on the left and right side of each separator line. Default is 6.
 
 *menu.separator.padding.height*
-	Space above and below each separator line. Default 3.
+	Space above and below each separator line. Default is 3.
 
 *menu.separator.color*
-	Menu separator color. Default #888888.
+	Menu separator color. Default is #888888.
 
 *menu.title.bg.color*
-	Menu title color. Default #589bda.
+	Menu title color. Default is #589bda.
 	Note: A menu title is a separator with a label.
 
 *menu.title.text.justify*
 	Specifies how menu titles are aligned in the titlebar.
-	Type justification. Default Center.
+	Type justification. Default is Center.
 
 *menu.title.text.color*
-	Text color of separator label.  Default #ffffff.
+	Text color of separator label. Default is #ffffff.
 
 *osd.bg.color*
 	Background color of on-screen-display. Inherits

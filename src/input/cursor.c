@@ -17,9 +17,10 @@
 #include "dnd.h"
 #include "idle.h"
 #include "input/gestures.h"
-#include "input/touch.h"
+#include "input/keyboard.h"
 #include "input/tablet.h"
 #include "input/tablet-tool.h"
+#include "input/touch.h"
 #include "labwc.h"
 #include "layers.h"
 #include "menu/menu.h"
@@ -401,6 +402,7 @@ cursor_update_image(struct seat *seat)
 		if (seat->seat->pointer_state.focused_surface) {
 			seat->server_cursor = LAB_CURSOR_DEFAULT;
 			wlr_cursor_set_xcursor(seat->cursor, seat->xcursor_manager, "");
+			wlr_seat_pointer_clear_focus(seat->seat);
 			cursor_update_focus(seat->server);
 		}
 		return;
@@ -496,7 +498,8 @@ cursor_update_common(struct server *server, struct cursor_context *ctx,
 	if (server->input_mode != LAB_INPUT_STATE_PASSTHROUGH) {
 		/*
 		 * Prevent updating focus/cursor image during
-		 * interactive move/resize
+		 * interactive move/resize, window switcher and
+		 * menu interaction.
 		 */
 		return false;
 	}
@@ -524,28 +527,9 @@ cursor_update_common(struct server *server, struct cursor_context *ctx,
 		 * cursor image will be set by request_cursor_notify()
 		 * in response to the enter event.
 		 */
-		bool has_focus = (ctx->surface ==
-			wlr_seat->pointer_state.focused_surface);
-
-		if (!has_focus || seat->server_cursor != LAB_CURSOR_CLIENT) {
-			/*
-			 * Enter the surface if necessary.  Usually we
-			 * prevent re-entering an already focused
-			 * surface, because the extra leave and enter
-			 * events can confuse clients (e.g. break
-			 * double-click detection).
-			 *
-			 * We do however send a leave/enter event pair
-			 * if a server-side cursor was set and we need
-			 * to trigger a cursor image update.
-			 */
-			if (has_focus) {
-				wlr_seat_pointer_notify_clear_focus(wlr_seat);
-			}
-			wlr_seat_pointer_notify_enter(wlr_seat, ctx->surface,
-				ctx->sx, ctx->sy);
-			seat->server_cursor = LAB_CURSOR_CLIENT;
-		}
+		wlr_seat_pointer_notify_enter(wlr_seat, ctx->surface,
+			ctx->sx, ctx->sy);
+		seat->server_cursor = LAB_CURSOR_CLIENT;
 		if (cursor_has_moved) {
 			*sx = ctx->sx;
 			*sy = ctx->sy;
@@ -614,7 +598,8 @@ cursor_process_motion(struct server *server, uint32_t time, double *sx, double *
 	}
 
 	if ((ctx.view || ctx.surface) && rc.focus_follow_mouse
-			&& !server->osd_state.cycle_view) {
+			&& server->input_mode
+				!= LAB_INPUT_STATE_WINDOW_SWITCHER) {
 		desktop_focus_view_or_surface(seat, ctx.view, ctx.surface,
 			rc.raise_on_focus);
 	}
@@ -654,9 +639,11 @@ _cursor_update_focus(struct server *server)
 	struct cursor_context ctx = get_cursor_context(server);
 
 	if ((ctx.view || ctx.surface) && rc.focus_follow_mouse
-			&& !rc.focus_follow_mouse_requires_movement
-			&& !server->osd_state.cycle_view) {
-		/* Prevents changing keyboard focus during A-Tab */
+			&& !rc.focus_follow_mouse_requires_movement) {
+		/*
+		 * Always focus the surface below the cursor when
+		 * followMouse=yes and followMouseRequiresMovement=no.
+		 */
 		desktop_focus_view_or_surface(&server->seat, ctx.view,
 			ctx.surface, rc.raise_on_focus);
 	}
@@ -901,14 +888,12 @@ static void
 handle_release_mousebinding(struct server *server,
 		struct cursor_context *ctx, uint32_t button)
 {
-	if (server->osd_state.cycle_view) {
+	if (server->input_mode == LAB_INPUT_STATE_WINDOW_SWITCHER) {
 		return;
 	}
 
 	struct mousebind *mousebind;
-
-	uint32_t modifiers = wlr_keyboard_get_modifiers(
-			&server->seat.keyboard_group->keyboard);
+	uint32_t modifiers = keyboard_get_all_modifiers(&server->seat);
 
 	wl_list_for_each(mousebind, &rc.mousebinds, link) {
 		if (ssd_part_contains(mousebind->context, ctx->type)
@@ -968,16 +953,14 @@ static bool
 handle_press_mousebinding(struct server *server, struct cursor_context *ctx,
 		uint32_t button)
 {
-	if (server->osd_state.cycle_view) {
+	if (server->input_mode == LAB_INPUT_STATE_WINDOW_SWITCHER) {
 		return false;
 	}
 
 	struct mousebind *mousebind;
 	bool double_click = is_double_click(rc.doubleclick_time, button, ctx);
 	bool consumed_by_frame_context = false;
-
-	uint32_t modifiers = wlr_keyboard_get_modifiers(
-			&server->seat.keyboard_group->keyboard);
+	uint32_t modifiers = keyboard_get_all_modifiers(&server->seat);
 
 	wl_list_for_each(mousebind, &rc.mousebinds, link) {
 		if (ssd_part_contains(mousebind->context, ctx->type)
@@ -1118,9 +1101,7 @@ cursor_process_button_release(struct seat *seat, uint32_t button,
 				menu_call_selected_actions(server);
 			} else {
 				menu_close_root(server);
-				double sx, sy;
-				cursor_update_common(server, &ctx, time_msec,
-					/*cursor_has_moved*/ false, &sx, &sy);
+				cursor_update_focus(server);
 			}
 		}
 		return notify;
@@ -1265,7 +1246,12 @@ cursor_emulate_button(struct seat *seat, uint32_t button,
 	wlr_seat_pointer_notify_frame(seat->seat);
 }
 
-static int
+struct scroll_info {
+	int direction;
+	bool run_action;
+};
+
+static struct scroll_info
 compare_delta(const struct wlr_pointer_axis_event *event, double *accum)
 {
 	/*
@@ -1279,6 +1265,13 @@ compare_delta(const struct wlr_pointer_axis_event *event, double *accum)
 	 * https://lists.freedesktop.org/archives/wayland-devel/2019-April/040377.html
 	 */
 	const double SCROLL_THRESHOLD = 10.0;
+	struct scroll_info info = {0};
+
+	if (event->delta_discrete < 0 || event->delta < 0) {
+		info.direction = -1;
+	} else if (event->delta_discrete > 0 || event->delta > 0) {
+		info.direction = 1;
+	}
 
 	if (event->delta == 0.0) {
 		/* Delta 0 marks the end of a scroll */
@@ -1287,14 +1280,13 @@ compare_delta(const struct wlr_pointer_axis_event *event, double *accum)
 		/* Accumulate smooth scrolling until we hit threshold */
 		*accum += event->delta;
 	}
-	if (event->delta_discrete < 0 || *accum < -SCROLL_THRESHOLD) {
+
+	if (event->delta_discrete != 0 || fabs(*accum) > SCROLL_THRESHOLD) {
 		*accum = fmod(*accum, SCROLL_THRESHOLD);
-		return -1;
-	} else if (event->delta_discrete > 0 || *accum > SCROLL_THRESHOLD) {
-		*accum = fmod(*accum, SCROLL_THRESHOLD);
-		return 1;
+		info.run_action = true;
 	}
-	return 0;
+
+	return info;
 }
 
 static bool
@@ -1303,23 +1295,23 @@ handle_cursor_axis(struct server *server, struct cursor_context *ctx,
 {
 	struct mousebind *mousebind;
 	bool handled = false;
-
-	uint32_t modifiers = wlr_keyboard_get_modifiers(
-			&server->seat.keyboard_group->keyboard);
+	uint32_t modifiers = keyboard_get_all_modifiers(&server->seat);
 
 	enum direction direction = LAB_DIRECTION_INVALID;
+	struct scroll_info info = {0};
+
 	if (event->orientation == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
-		int rel = compare_delta(event, &server->seat.smooth_scroll_offset.x);
-		if (rel < 0) {
+		info = compare_delta(event, &server->seat.smooth_scroll_offset.x);
+		if (info.direction < 0) {
 			direction = LAB_DIRECTION_LEFT;
-		} else if (rel > 0) {
+		} else if (info.direction > 0) {
 			direction = LAB_DIRECTION_RIGHT;
 		}
 	} else if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
-		int rel = compare_delta(event, &server->seat.smooth_scroll_offset.y);
-		if (rel < 0) {
+		info = compare_delta(event, &server->seat.smooth_scroll_offset.y);
+		if (info.direction < 0) {
 			direction = LAB_DIRECTION_UP;
-		} else if (rel > 0) {
+		} else if (info.direction > 0) {
 			direction = LAB_DIRECTION_DOWN;
 		}
 	} else {
@@ -1336,7 +1328,13 @@ handle_cursor_axis(struct server *server, struct cursor_context *ctx,
 				&& modifiers == mousebind->modifiers
 				&& mousebind->mouse_event == MOUSE_ACTION_SCROLL) {
 			handled = true;
-			actions_run(ctx->view, server, &mousebind->actions, ctx);
+			/*
+			 * Action may not be executed if the accumulated scroll
+			 * delta on touchpads doesn't exceed the threshold
+			 */
+			if (info.run_action) {
+				actions_run(ctx->view, server, &mousebind->actions, ctx);
+			}
 		}
 	}
 

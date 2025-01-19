@@ -23,13 +23,13 @@ jobs:
   build:
     name: Build
     needs: codestyle
-    timeout-minutes: 20
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         name: [
           Arch,
-#          Debian,
+          Debian,
           FreeBSD,
           Void-musl
         ]
@@ -40,11 +40,11 @@ jobs:
             env:
               TARGET: 'sh -xe'
 
-#          - name: Debian
-#            os: ubuntu-latest
-#            container: debian:testing
-#            env:
-#              TARGET: 'sh -xe'
+          - name: Debian
+            os: ubuntu-latest
+            container: debian:testing
+            env:
+              TARGET: 'sh -xe'
 
           - name: FreeBSD
             os: ubuntu-latest
@@ -71,7 +71,7 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm git meson clang wlroots libdrm libinput \
             wayland-protocols cairo pango libxml2 xorg-xwayland librsvg \
-            libdisplay-info
+            libdisplay-info gdb ttf-dejavu foot libsfdo
 
       - name: Install Debian Testing dependencies
         if: matrix.name == 'Debian'
@@ -81,7 +81,7 @@ jobs:
           apt-get upgrade -y
           apt-get install -y git gcc clang gdb xwayland
           apt-get build-dep -y labwc
-          apt-get install libwlroots-0.18-dev
+          apt-get build-dep -y libwlroots-dev
 
       - name: Install FreeBSD dependencies
         if: matrix.name == 'FreeBSD'
@@ -107,9 +107,9 @@ jobs:
           xbps-install -y git meson gcc clang pkg-config scdoc \
             cairo-devel glib-devel libpng-devel librsvg-devel libxml2-devel \
             pango-devel wlroots0.18-devel gdb bash xorg-server-xwayland \
-            dejavu-fonts-ttf libsfdo-devel
+            dejavu-fonts-ttf libsfdo-devel foot
 
-      # These build are executed on all runners
+      # These builds are executed on all runners
       - name: Build with gcc
         run: |
           echo '
@@ -120,6 +120,7 @@ jobs:
           ' | $TARGET
 
       - name: Build with clang
+        if: matrix.name != 'Debian'
         run: |
           echo '
             cd "$GITHUB_WORKSPACE"
@@ -138,6 +139,7 @@ jobs:
           ' | $TARGET
 
       - name: Build with clang - no-xwayland
+        if: matrix.name != 'Debian'
         run: |
           echo '
             cd "$GITHUB_WORKSPACE"
@@ -153,6 +155,7 @@ jobs:
             export CC=gcc
             meson setup build-gcc-release -Dxwayland=enabled \
               -Dbuildtype=release -Db_ndebug=true --werror
+            meson configure build-gcc-release -Dwlroots:b_ndebug=false || true
             meson compile -C build-gcc-release
           ' | $TARGET
 
@@ -166,38 +169,75 @@ jobs:
             meson compile -C build-gcc-static_analyzer
           ' | $TARGET
 
-
-      # Runtime tests, these run on Debian and Void only (the later due to libmusl being used)
       - name: Build with clang - release
+        if: matrix.name != 'Debian'
         run: |
           echo '
             cd "$GITHUB_WORKSPACE"
             export CC=clang
             meson setup build-clang-release -Dxwayland=enabled \
               -Dbuildtype=release -Db_ndebug=true --werror
+            meson configure build-clang-release -Dwlroots:b_ndebug=false || true
             meson compile -C build-clang-release
           ' | $TARGET
 
-      - name: Build with gcc - runtime test
-        if: matrix.name == 'Debian'
+      # Non-feature build, run on Arch only
+      - name: Build with gcc - no-feature test
+        if: matrix.name == 'Arch'
         run: |
           echo '
             cd "$GITHUB_WORKSPACE"
             export CC=gcc
-            meson setup build-gcc-ci -Dxwayland=enabled -Db_sanitize=undefined --werror
-            meson compile -C build-gcc-ci
-            scripts/ci/smoke-test.sh build-gcc-ci
+            meson setup build-gcc-no-feature -Dxwayland=disabled \
+              -Dicon=disabled -Dsvg=disabled --werror
+            meson compile -C build-gcc-no-feature
+          ' | $TARGET
+
+      # Runtime tests, these run on Arch and Void only (the later due to libmusl being used)
+      - name: Build with gcc - runtime test
+        if: matrix.name == 'Arch'
+        run: |
+          echo '
+            cd "$GITHUB_WORKSPACE"
+            export CC=gcc
+            meson setup build-gcc-gdb -Dxwayland=enabled -Db_sanitize=undefined --werror
+            meson compile -C build-gcc-gdb
+            scripts/ci/smoke-test.sh build-gcc-gdb
           ' | $TARGET
 
       - name: Build with clang - runtime test
-        if: matrix.name == 'Debian'
+        if: matrix.name == 'Arch'
         run: |
           echo '
             cd "$GITHUB_WORKSPACE"
             export CC=clang
-            meson setup build-clang-ci -Dxwayland=enabled -Db_sanitize=undefined --werror
-            meson compile -C build-clang-ci
-            scripts/ci/smoke-test.sh build-clang-ci
+            meson setup build-clang-gdb -Dxwayland=enabled -Db_sanitize=undefined --werror
+            meson compile -C build-clang-gdb
+            scripts/ci/smoke-test.sh build-clang-gdb
+          ' | $TARGET
+
+      - name: Build with gcc - runtime leak test
+        if: matrix.name == 'Arch'
+        run: |
+          echo '
+            cd "$GITHUB_WORKSPACE"
+            export CC=gcc
+            meson setup build-gcc-leak -Dxwayland=enabled -Db_sanitize=address,undefined \
+              --werror --force-fallback-for=wlroots
+            meson compile -C build-gcc-leak
+            LABWC_LEAK_TEST=1 scripts/ci/smoke-test.sh build-gcc-leak
+          ' | $TARGET
+
+      - name: Build with clang - runtime leak test
+        if: matrix.name == 'Arch'
+        run: |
+          echo '
+            cd "$GITHUB_WORKSPACE"
+            export CC=clang
+            meson setup build-clang-leak -Dxwayland=enabled -Db_sanitize=address,undefined \
+              --werror --force-fallback-for=wlroots
+            meson compile -C build-clang-leak
+            LABWC_LEAK_TEST=1 scripts/ci/smoke-test.sh build-clang-leak
           ' | $TARGET
 
       # Void-musl doesn't support sanitizer
@@ -207,7 +247,7 @@ jobs:
           echo '
             cd "$GITHUB_WORKSPACE"
             export CC=gcc
-            meson setup build-gcc-ci -Dxwayland=enabled --werror
-            meson compile -C build-gcc-ci
-            LABWC_RUNS=20 scripts/ci/smoke-test.sh build-gcc-ci
+            meson setup build-gcc-gdb -Dxwayland=enabled --werror
+            meson compile -C build-gcc-gdb
+            LABWC_RUNS=2 scripts/ci/smoke-test.sh build-gcc-gdb
           ' | $TARGET

@@ -14,6 +14,7 @@
 #include <wayland-server-core.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <wlr/version.h>
 #include "action.h"
 #include "common/dir.h"
 #include "common/list.h"
@@ -23,6 +24,7 @@
 #include "common/parse-bool.h"
 #include "common/parse-double.h"
 #include "common/string-helpers.h"
+#include "common/three-state.h"
 #include "config/default-bindings.h"
 #include "config/keybind.h"
 #include "config/libinput.h"
@@ -35,6 +37,9 @@
 #include "view.h"
 #include "window-rules.h"
 #include "workspaces.h"
+
+#define LAB_WLR_VERSION_OLDER_THAN(major, minor, micro) \
+	(WLR_VERSION_NUM < (((major) << 16) | ((minor) << 8) | (micro)))
 
 static bool in_regions;
 static bool in_usable_area_override;
@@ -63,7 +68,7 @@ static struct window_rule *current_window_rule;
 static struct action *current_window_rule_action;
 static struct view_query *current_view_query;
 static struct action *current_child_action;
-/* for backword compatibility of <mouse><scrollFactor> */
+/* for backward compatibility of <mouse><scrollFactor> */
 static double mouse_scroll_factor = -1;
 
 enum font_place {
@@ -142,7 +147,7 @@ parse_window_type(const char *type)
  * desk         D           All-desktops toggle (aka omnipresent)
  */
 static void
-fill_section(const char *content, struct wl_list *list)
+fill_section(const char *content, struct wl_list *list, uint32_t *found_buttons)
 {
 	gchar **identifiers = g_strsplit(content, ",", -1);
 	for (size_t i = 0; identifiers[i]; ++i) {
@@ -152,7 +157,13 @@ fill_section(const char *content, struct wl_list *list)
 		}
 		enum ssd_part_type type = LAB_SSD_NONE;
 		if (!strcmp(identifier, "icon")) {
+#if HAVE_LIBSFDO
 			type = LAB_SSD_BUTTON_WINDOW_ICON;
+#else
+			wlr_log(WLR_ERROR, "libsfdo is not linked. "
+				"Replacing 'icon' in titlebar layout with 'menu'.");
+			type = LAB_SSD_BUTTON_WINDOW_MENU;
+#endif
 		} else if (!strcmp(identifier, "menu")) {
 			type = LAB_SSD_BUTTON_WINDOW_MENU;
 		} else if (!strcmp(identifier, "iconify")) {
@@ -173,6 +184,14 @@ fill_section(const char *content, struct wl_list *list)
 
 		assert(type != LAB_SSD_NONE);
 
+		if (*found_buttons & (1 << type)) {
+			wlr_log(WLR_ERROR, "ignoring duplicated button type '%s'",
+				identifier);
+			continue;
+		}
+
+		*found_buttons |= (1 << type);
+
 		struct title_button *item = znew(*item);
 		item->type = type;
 		wl_list_append(list, &item->link);
@@ -180,61 +199,9 @@ fill_section(const char *content, struct wl_list *list)
 	g_strfreev(identifiers);
 }
 
-static int
-compare_strings(const void *a, const void *b)
-{
-	char * const *str1 = a;
-	char * const *str2 = b;
-	return strcmp(*str1, *str2);
-}
-
-static bool
-contains_duplicates(char *content)
-{
-	bool ret = false;
-
-	/*
-	 * The string typically looks like: 'menu:iconfiy,max,close' so we have
-	 * to split on both ':' and ','.
-	 */
-	gchar **idents = g_strsplit_set(content, ",:", -1);
-
-	/*
-	 * We've got to have at least two for duplicates to exist. Bailing out
-	 * early here also enables the below algorithm which just iterates and
-	 * checks if previous item is the same.
-	 */
-	if (g_strv_length(idents) <= 1) {
-		goto out;
-	}
-
-	qsort(idents, g_strv_length(idents), sizeof(gchar *), compare_strings);
-	for (size_t i = 1; idents[i]; ++i) {
-		if (string_null_or_empty(idents[i])) {
-			continue;
-		}
-		if (!strcmp(idents[i], idents[i-1])) {
-			ret = true;
-			wlr_log(WLR_ERROR,
-				"titleLayout identifier '%s' is a duplicate",
-				idents[i]);
-			break;
-		}
-	}
-
-out:
-	g_strfreev(idents);
-	return ret;
-}
-
 static void
 fill_title_layout(char *content)
 {
-	if (contains_duplicates(content)) {
-		wlr_log(WLR_ERROR, "titleLayout contains duplicates");
-		return;
-	}
-
 	struct wl_list *sections[] = {
 		&rc.title_buttons_left,
 		&rc.title_buttons_right,
@@ -247,8 +214,9 @@ fill_title_layout(char *content)
 		goto err;
 	}
 
+	uint32_t found_buttons = 0;
 	for (size_t i = 0; parts[i]; ++i) {
-		fill_section(parts[i], sections[i]);
+		fill_section(parts[i], sections[i], &found_buttons);
 	}
 
 	rc.title_layout_loaded = true;
@@ -644,7 +612,14 @@ fill_touch(char *nodename, char *content)
 	if (!strcasecmp(nodename, "touch")) {
 		current_touch = znew(*current_touch);
 		wl_list_append(&rc.touch_configs, &current_touch->link);
-	} else if (!strcasecmp(nodename, "deviceName.touch")) {
+		return;
+	}
+
+	if (!content) {
+		return;
+	}
+
+	if (!strcasecmp(nodename, "deviceName.touch")) {
 		xstrdup_replace(current_touch->device_name, content);
 	} else if (!strcasecmp(nodename, "mapToOutput.touch")) {
 		xstrdup_replace(current_touch->output_name, content);
@@ -1070,6 +1045,8 @@ entry(xmlNode *node, char *nodename, char *content)
 		set_adaptive_sync_mode(content, &rc.adaptive_sync);
 	} else if (!strcasecmp(nodename, "allowTearing.core")) {
 		set_tearing_mode(content, &rc.allow_tearing);
+	} else if (!strcasecmp(nodename, "autoEnableOutputs.core")) {
+		set_bool(content, &rc.auto_enable_outputs);
 	} else if (!strcasecmp(nodename, "reuseOutputMode.core")) {
 		set_bool(content, &rc.reuse_output_mode);
 	} else if (!strcmp(nodename, "policy.placement")) {
@@ -1079,6 +1056,15 @@ entry(xmlNode *node, char *nodename, char *content)
 		}
 	} else if (!strcasecmp(nodename, "xwaylandPersistence.core")) {
 		set_bool(content, &rc.xwayland_persistence);
+
+#if LAB_WLR_VERSION_OLDER_THAN(0, 18, 2)
+		if (!rc.xwayland_persistence) {
+			wlr_log(WLR_ERROR, "to avoid the risk of a fatal crash, "
+				"setting xwaylandPersistence to 'no' is only "
+				"recommended when labwc is compiled against "
+				"wlroots >= 0.18.2. See #2371 for details.");
+		}
+#endif
 	} else if (!strcasecmp(nodename, "x.cascadeOffset.placement")) {
 		rc.placement_cascade_offset_x = atoi(content);
 	} else if (!strcasecmp(nodename, "y.cascadeOffset.placement")) {
@@ -1130,7 +1116,10 @@ entry(xmlNode *node, char *nodename, char *content)
 	} else if (!strcasecmp(nodename, "repeatDelay.keyboard")) {
 		rc.repeat_delay = atoi(content);
 	} else if (!strcasecmp(nodename, "numlock.keyboard")) {
-		set_bool(content, &rc.kb_numlock_enable);
+		bool value;
+		set_bool(content, &value);
+		rc.kb_numlock_enable = value ? LAB_STATE_ENABLED
+			: LAB_STATE_DISABLED;
 	} else if (!strcasecmp(nodename, "layoutScope.keyboard")) {
 		/*
 		 * This can be changed to an enum later on
@@ -1390,7 +1379,8 @@ xml_tree_walk(xmlNode *node)
 void
 rcxml_parse_xml(struct buf *b)
 {
-	xmlDoc *d = xmlParseMemory(b->data, b->len);
+	int options = 0;
+	xmlDoc *d = xmlReadMemory(b->data, b->len, NULL, NULL, options);
 	if (!d) {
 		wlr_log(WLR_ERROR, "error parsing config file");
 		return;
@@ -1442,8 +1432,18 @@ rcxml_init(void)
 	rc.gap = 0;
 	rc.adaptive_sync = LAB_ADAPTIVE_SYNC_DISABLED;
 	rc.allow_tearing = false;
+	rc.auto_enable_outputs = true;
 	rc.reuse_output_mode = false;
+
+#if LAB_WLR_VERSION_OLDER_THAN(0, 18, 2)
+	/*
+	 * For wlroots < 0.18.2, keep xwayland alive by default to work around
+	 * a fatal crash when the X server is terminated during drag-and-drop.
+	 */
+	rc.xwayland_persistence = true;
+#else
 	rc.xwayland_persistence = false;
+#endif
 
 	init_font_defaults(&rc.font_activewindow);
 	init_font_defaults(&rc.font_inactivewindow);
@@ -1467,7 +1467,7 @@ rcxml_init(void)
 
 	rc.repeat_rate = 25;
 	rc.repeat_delay = 600;
-	rc.kb_numlock_enable = true;
+	rc.kb_numlock_enable = LAB_STATE_UNSPECIFIED;
 	rc.kb_layout_per_window = false;
 	rc.screen_edge_strength = 20;
 	rc.window_edge_strength = 20;
@@ -1678,7 +1678,16 @@ post_processing(void)
 	}
 
 	if (!rc.title_layout_loaded) {
+#if HAVE_LIBSFDO
 		fill_title_layout("icon:iconify,max,close");
+#else
+		/*
+		 * 'icon' is replaced with 'menu' in fill_title_layout() when
+		 * libsfdo is not linked, but we also replace it here not to
+		 * show error message with default settings.
+		 */
+		fill_title_layout("menu:iconify,max,close");
+#endif
 	}
 
 	/*

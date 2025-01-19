@@ -20,19 +20,28 @@
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_tablet_v2.h>
+#include <wlr/types/wlr_xdg_foreign_registry.h>
+#include <wlr/types/wlr_xdg_foreign_v1.h>
+#include <wlr/types/wlr_xdg_foreign_v2.h>
 
 #if HAVE_XWAYLAND
 #include <wlr/xwayland.h>
 #include "xwayland-shell-v1-protocol.h"
 #endif
+
 #include "drm-lease-v1-protocol.h"
+#include "common/macros.h"
+#include "common/scaled-scene-buffer.h"
 #include "config/rcxml.h"
 #include "config/session.h"
 #include "decorations.h"
+
 #if HAVE_LIBSFDO
-#include "icon-loader.h"
+#include "desktop-entry.h"
 #endif
+
 #include "idle.h"
+#include "input/keyboard.h"
 #include "labwc.h"
 #include "layers.h"
 #include "magnifier.h"
@@ -60,14 +69,15 @@ static struct wl_event_source *sigchld_source;
 static void
 reload_config_and_theme(struct server *server)
 {
+	scaled_scene_buffer_invalidate_sharing();
 	rcxml_finish();
 	rcxml_read(rc.config_file);
 	theme_finish(server->theme);
 	theme_init(server->theme, server, rc.theme_name);
 
 #if HAVE_LIBSFDO
-	icon_loader_finish(server);
-	icon_loader_init(server);
+	desktop_entry_finish(server);
+	desktop_entry_init(server);
 #endif
 
 	struct view *view;
@@ -88,6 +98,7 @@ handle_sighup(int signal, void *data)
 {
 	struct server *server = data;
 
+	keyboard_cancel_all_keybind_repeats(&server->seat);
 	session_environment_init();
 	reload_config_and_theme(server);
 	output_virtual_update_fallback(server);
@@ -194,6 +205,89 @@ handle_drm_lease_request(struct wl_listener *listener, void *data)
 }
 
 static bool
+protocol_is_privileged(const struct wl_interface *iface)
+{
+	static const char * const rejected[] = {
+		"wp_drm_lease_device_v1",
+		"zwlr_gamma_control_manager_v1",
+		"zwlr_output_manager_v1",
+		"zwlr_output_power_manager_v1",
+		"zwp_input_method_manager_v2",
+		"zwlr_virtual_pointer_manager_v1",
+		"zwp_virtual_keyboard_manager_v1",
+		"zwlr_export_dmabuf_manager_v1",
+		"zwlr_screencopy_manager_v1",
+		"zwlr_data_control_manager_v1",
+		"wp_security_context_manager_v1",
+		"ext_idle_notifier_v1",
+		"zcosmic_workspace_manager_v1",
+		"zwlr_foreign_toplevel_manager_v1",
+		"ext_foreign_toplevel_list_v1",
+		"ext_session_lock_manager_v1",
+		"zwlr_layer_shell_v1",
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(rejected); i++) {
+		if (!strcmp(iface->name, rejected[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
+allow_for_sandbox(const struct wlr_security_context_v1_state *security_state,
+		const struct wl_interface *iface)
+{
+	if (!strcmp(iface->name, "security_context_manager_v1")) {
+		return false;
+	}
+
+	/* protocols are split into 3 blocks, from least privileges to highest privileges */
+	static const char * const allowed_protocols[] = {
+		/* absolute base */
+		"wl_shm",
+		"wl_compositor",
+		"wl_subcompositor",
+		"wl_data_device_manager", /* would be great if we could drop this one */
+		"wl_seat",
+		"xdg_wm_base",
+		/* enhanced */
+		"wl_output",
+		"wl_drm",
+		"zwp_linux_dmabuf_v1",
+		"zwp_primary_selection_device_manager_v1",
+		"zwp_text_input_manager_v3",
+		"zwp_pointer_gestures_v1",
+		"wp_cursor_shape_manager_v1",
+		"zwp_relative_pointer_manager_v1",
+		"xdg_activation_v1",
+		"org_kde_kwin_server_decoration_manager",
+		"zxdg_decoration_manager_v1",
+		"wp_presentation",
+		"wp_viewporter",
+		"wp_single_pixel_buffer_manager_v1",
+		"wp_fractional_scale_manager_v1",
+		"wp_tearing_control_manager_v1",
+		"zwp_tablet_manager_v2",
+		"zxdg_importer_v1",
+		"zxdg_importer_v2",
+		/* plus */
+		"zxdg_exporter_v1",
+		"zxdg_exporter_v2",
+		"zwp_idle_inhibit_manager_v1",
+		"zwp_pointer_constraints_v1",
+		"zxdg_output_manager_v1",
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(allowed_protocols); i++) {
+		if (!strcmp(iface->name, allowed_protocols[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
 server_global_filter(const struct wl_client *client, const struct wl_global *global, void *data)
 {
 	const struct wl_interface *iface = wl_global_get_interface(global);
@@ -227,8 +321,28 @@ server_global_filter(const struct wl_client *client, const struct wl_global *glo
 		wlr_security_context_manager_v1_lookup_client(
 			server->security_context_manager_v1, (struct wl_client *)client);
 	if (security_context && global == server->security_context_manager_v1->global) {
-		wlr_log(WLR_DEBUG, "blocking security_context_manager_v1 for the sandboxed client");
 		return false;
+	} else if (security_context) {
+		/*
+		 * We are using an allow list for sandboxes to not
+		 * accidentally leak a new privileged protocol.
+		 */
+		bool allow = allow_for_sandbox(security_context, iface);
+		/*
+		 * TODO: The following call is basically useless right now
+		 *       and should be replaced with
+		 *       assert(allow || protocol_is_privileged(iface));
+		 *       This ensures that our lists are in sync with what
+		 *       protocols labwc supports.
+		 */
+		if (!allow && !protocol_is_privileged(iface)) {
+			wlr_log(WLR_ERROR, "Blocking unknown protocol %s", iface->name);
+		} else if (!allow) {
+			wlr_log(WLR_DEBUG, "Blocking %s for security context %s->%s->%s",
+				iface->name, security_context->sandbox_engine,
+				security_context->app_id, security_context->instance_id);
+		}
+		return allow;
 	}
 
 	return true;
@@ -449,10 +563,11 @@ server_init(struct server *server)
 	 * | Type              | Scene Tree       | Per Output | Example
 	 * | ----------------- | ---------------- | ---------- | -------
 	 * | ext-session       | lock-screen      | Yes        | swaylock
+	 * | osd               | osd_tree         | Yes        |
+	 * | compositor-menu   | menu_tree        | No         | root-menu
 	 * | layer-shell       | layer-popups     | Yes        |
 	 * | layer-shell       | overlay-layer    | Yes        |
 	 * | layer-shell       | top-layer        | Yes        | waybar
-	 * | server            | labwc-menus      | No         |
 	 * | xwayland-OR       | unmanaged        | No         | dmenu
 	 * | xdg-popups        | xdg-popups       | No         |
 	 * | toplevels windows | always-on-top    | No         |
@@ -469,6 +584,11 @@ server_init(struct server *server)
 #if HAVE_XWAYLAND
 	server->unmanaged_tree = wlr_scene_tree_create(&server->scene->tree);
 #endif
+
+	/*
+	 * menu_tree is moved to top in new_output_notify() when layer-shell
+	 * layers are positioned
+	 */
 	server->menu_tree = wlr_scene_tree_create(&server->scene->tree);
 
 	workspaces_init(server);
@@ -584,8 +704,14 @@ server_init(struct server *server)
 
 	layers_init(server);
 
+	/* These get cleaned up automatically on display destroy */
+	struct wlr_xdg_foreign_registry *registry =
+		wlr_xdg_foreign_registry_create(server->wl_display);
+	wlr_xdg_foreign_v1_create(server->wl_display, registry);
+	wlr_xdg_foreign_v2_create(server->wl_display, registry);
+
 #if HAVE_LIBSFDO
-	icon_loader_init(server);
+	desktop_entry_init(server);
 #endif
 
 #if HAVE_XWAYLAND
@@ -629,7 +755,7 @@ server_finish(struct server *server)
 	xwayland_server_finish(server);
 #endif
 #if HAVE_LIBSFDO
-	icon_loader_finish(server);
+	desktop_entry_finish(server);
 #endif
 	if (sighup_source) {
 		wl_event_source_remove(sighup_source);

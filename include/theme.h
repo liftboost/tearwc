@@ -12,6 +12,8 @@
 #include <wlr/render/wlr_renderer.h>
 #include "ssd.h"
 
+struct lab_img;
+
 enum lab_justification {
 	LAB_JUSTIFY_LEFT,
 	LAB_JUSTIFY_CENTER,
@@ -82,7 +84,7 @@ struct theme {
 		 *
 		 * Elements in buttons[0] are all NULL since LAB_SSD_BUTTON_FIRST is 1.
 		 */
-		struct lab_data_buffer *buttons
+		struct lab_img *button_imgs
 			[LAB_SSD_BUTTON_LAST + 1][LAB_BS_ALL + 1];
 
 		struct lab_data_buffer *corner_top_left_normal;
@@ -101,6 +103,8 @@ struct theme {
 	int menu_overlap_y;
 	int menu_min_width;
 	int menu_max_width;
+	int menu_border_width;
+	float menu_border_color[4];
 
 	int menu_items_padding_x;
 	int menu_items_padding_y;
@@ -159,7 +163,7 @@ struct server;
  * theme_init - read openbox theme and generate button textures
  * @theme: theme data
  * @server: server
- * @theme_name: theme-name in <theme-dir>/<theme-name>/openbox-3/themerc
+ * @theme_name: theme-name in <theme-dir>/<theme-name>/labwc/themerc
  * Note <theme-dir> is obtained in theme-dir.c
  */
 void theme_init(struct theme *theme, struct server *server, const char *theme_name);
